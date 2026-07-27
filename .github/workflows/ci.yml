@@ -49,7 +49,6 @@ jobs:
 
   dependency-audit:
     runs-on: ubuntu-latest
-    continue-on-error: true   # surfaces new advisories without blocking releases
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,7 +58,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install --package-lock-only && npm audit --omit=dev
+      - run: npm install --package-lock-only
+        working-directory: frontend
+      # full report for the log (never fails the job)
+      - run: npm audit --omit=dev || true
+        working-directory: frontend
+      # the actual gate; allowlisted advisories are documented in SECURITY.md
+      # GHSA-qwww-vcr4-c8h2: react-router RSC-mode CSRF — N/A, client-only SPA
+      - run: npx audit-ci --high --skip-dev --allowlist GHSA-qwww-vcr4-c8h2
         working-directory: frontend
 
   publish-images:

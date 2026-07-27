@@ -50,4 +50,6 @@ Nestbox is a **self-hosted LAN application** for a trusted team. What it defends
 - `npm audit` flags react-router ≥7.12 for an RSC-mode CSRF advisory
   (GHSA-qwww-vcr4-c8h2). Nestbox is a pure client-side SPA — it does not use React
   Server Components or SSR, so the vulnerable code path is unreachable. Downgrading
-  would reintroduce two fixed advisories, so we stay on ≥7.18.
+  would reintroduce two fixed advisories, so we stay on ≥7.18. The advisory is
+  allowlisted in CI's `dependency-audit` job (`.github/workflows/ci.yml`) — remove it
+  from the allowlist once react-router ships a fix.
