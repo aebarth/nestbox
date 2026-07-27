@@ -26,7 +26,7 @@ services:
       retries: 10
 
   backend:
-    image: ghcr.io/red-hen-admin/nestbox-backend:latest
+    image: ghcr.io/aebarth/nestbox-backend:latest
     environment: &backend_env
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-nestbox}:${POSTGRES_PASSWORD:-nestbox}@postgres:5432/${POSTGRES_DB:-nestbox}
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
@@ -42,7 +42,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: ghcr.io/red-hen-admin/nestbox-backend:latest
+    image: ghcr.io/aebarth/nestbox-backend:latest
     command: python worker.py
     environment: *backend_env
     volumes:
@@ -53,7 +53,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ghcr.io/red-hen-admin/nestbox-frontend:latest
+    image: ghcr.io/aebarth/nestbox-frontend:latest
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:

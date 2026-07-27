@@ -30,7 +30,7 @@ Runs anywhere Docker runs: Windows, macOS, Linux.
 Requirements: [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose).
 
 ```bash
-git clone https://github.com/red-hen-admin/nestbox.git
+git clone https://github.com/aebarth/nestbox.git
 cd nestbox
 cp .env.example .env
 # edit .env: set SECRET_KEY (openssl rand -hex 32) and your two folders
