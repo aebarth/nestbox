@@ -1,0 +1,63 @@
+# Nestbox — run from prebuilt images (no clone/build needed).
+# 1. Download this file and .env.example into a folder
+# 2. cp .env.example .env  — set SECRET_KEY and your folders
+# 3. docker compose up -d  — open http://localhost:3000
+#
+# db-init note: the schema ships inside the backend image and is applied on
+# first start, so this file is fully standalone.
+#
+# Developing / building from source? Use docker-compose.dev.yml instead.
+
+name: nestbox
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nestbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nestbox}
+      POSTGRES_DB: ${POSTGRES_DB:-nestbox}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nestbox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: ghcr.io/red-hen-admin/nestbox-backend:latest
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-nestbox}:${POSTGRES_PASSWORD:-nestbox}@postgres:5432/${POSTGRES_DB:-nestbox}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      NESTBOX_BOOTSTRAP_SCHEMA: "1"
+    volumes:
+      - ${NESTBOX_SOURCES_PATH:?Set NESTBOX_SOURCES_PATH in .env}:/sources:rw
+      - ${NESTBOX_INBOX_PATH:?Set NESTBOX_INBOX_PATH in .env}:/inbox:rw
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/red-hen-admin/nestbox-backend:latest
+    command: python worker.py
+    environment: *backend_env
+    volumes:
+      - ${NESTBOX_SOURCES_PATH}:/sources:rw
+      - ${NESTBOX_INBOX_PATH}:/inbox:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    image: ghcr.io/red-hen-admin/nestbox-frontend:latest
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

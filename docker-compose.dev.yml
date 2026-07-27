@@ -1,0 +1,57 @@
+name: nestbox
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nestbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nestbox}
+      POSTGRES_DB: ${POSTGRES_DB:-nestbox}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nestbox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-nestbox}:${POSTGRES_PASSWORD:-nestbox}@postgres:5432/${POSTGRES_DB:-nestbox}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+    volumes:
+      - ${NESTBOX_SOURCES_PATH:-./sample-data/sources}:/sources:rw
+      - ${NESTBOX_INBOX_PATH:-./sample-data/inbox}:/inbox:rw
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: python worker.py
+    environment: *backend_env
+    volumes:
+      - ${NESTBOX_SOURCES_PATH:-./sample-data/sources}:/sources:rw
+      - ${NESTBOX_INBOX_PATH:-./sample-data/inbox}:/inbox:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
