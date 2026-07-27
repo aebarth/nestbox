@@ -112,7 +112,18 @@ def status_summary(db: Session = Depends(get_db), user: User = Depends(get_curre
         select(ScanRun).where(ScanRun.status == "done").order_by(ScanRun.id.desc()).limit(1)
     ).scalar_one_or_none()
     boxes = db.execute(select(func.count()).select_from(Box)).scalar()
+    live = Record.status.notin_(("retired", "superseded"))
+    uncategorized = db.execute(
+        select(func.count()).select_from(Record)
+        .where(live, Record.record_type_id.is_(None))
+    ).scalar()
+    ocr_pending = db.execute(
+        select(func.count()).select_from(Record)
+        .where(Record.ocr_status == "pending", Record.status.in_(("active", "inbox")))
+    ).scalar()
     return {
+        "uncategorized": uncategorized,
+        "ocr_pending": ocr_pending,
         "by_status": by_status,
         "by_source": by_source,
         "open_alerts": open_alerts,

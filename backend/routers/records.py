@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -56,6 +57,8 @@ def search(
                 Record.name.ilike(like), Record.title.ilike(like),
                 Record.path.ilike(like), Record.lot_number.ilike(like),
                 Record.part_number.ilike(like), Record.notes.ilike(like),
+                # full-text search over the extracted/OCR'd document content
+                Record.ocr_tsv.op("@@")(func.websearch_to_tsquery("english", q)),
             ))
         if status:
             qy = qy.where(Record.status == status)
@@ -104,6 +107,60 @@ def get_record(record_id: int, db: Session = Depends(get_db), user: User = Depen
     if r is None:
         raise HTTPException(status_code=404, detail="Record not found")
     return record_out(r)
+
+
+@router.get("/{record_id}/content")
+def record_content(record_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Stream the PDF for in-app viewing."""
+    import connectors
+    from connectors.base import RemoteFile
+
+    r = db.execute(
+        select(Record).options(joinedload(Record.source)).where(Record.id == record_id)
+    ).unique().scalar_one_or_none()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if r.status in ("missing",):
+        raise HTTPException(status_code=409, detail="File is currently missing")
+    try:
+        connector = connectors.get(r.source)
+        rf = RemoteFile(external_id=r.external_id, path=r.path, name=r.name,
+                        size=r.size_bytes, mtime=r.file_mtime)
+        stream = connector.open_stream(rf)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not read the file: {exc}")
+    return StreamingResponse(
+        stream,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{r.name}"'},
+    )
+
+
+@router.get("/{record_id}/text")
+def record_text(record_id: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    r = db.get(Record, record_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {
+        "ocr_status": r.ocr_status,
+        "ocr_method": r.ocr_method,
+        "ocr_at": r.ocr_at,
+        "chars": len(r.ocr_text or ""),
+        "preview": (r.ocr_text or "")[:3000],
+    }
+
+
+@router.post("/{record_id}/ocr")
+def requeue_ocr(record_id: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    r = db.get(Record, record_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+    r.ocr_status = "pending"
+    db.commit()
+    return {"ok": True, "detail": "Queued — the worker extracts text within a minute or two."}
 
 
 @router.get("/{record_id}/events", response_model=list[schemas.FileEventOut])

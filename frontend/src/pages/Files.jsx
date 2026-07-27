@@ -49,7 +49,7 @@ export default function Files({ user }) {
       <div className="card flex flex-wrap items-center gap-2 p-3">
         <form className="relative min-w-64 flex-1" onSubmit={(e) => { e.preventDefault(); setFilter('q', q) }}>
           <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
-          <input className="input pl-9" placeholder="Search name, title, path, lot, part number…"
+          <input className="input pl-9" placeholder="Search name, title, path, lot, part number, or document contents…"
                  value={q} onChange={(e) => setQ(e.target.value)} />
         </form>
         <select className="input w-40" value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>

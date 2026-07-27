@@ -84,6 +84,10 @@ def main() -> None:
                     log.info("Executing run %s (%s)", run.id, run.kind)
                     execute_run(db, run)
                     continue  # drain the queue before sleeping
+                from services import ocr
+
+                if ocr.process_pending(db, budget=10) == 10:
+                    continue  # more OCR waiting; keep going without sleeping
         except Exception:
             log.exception("Worker loop error")
         time.sleep(10)

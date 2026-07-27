@@ -4,7 +4,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from database import apply_migrations
-from routers import admin, alerts, auth, boxes, cloud, labels, lookups, records, reports, scans, sources, wizard
+from routers import (
+    admin,
+    alerts,
+    auth,
+    boxes,
+    cloud,
+    labels,
+    lookups,
+    onboarding,
+    records,
+    reports,
+    scans,
+    sources,
+    wizard,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,7 +36,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for router in (auth, admin, sources, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud):
+for router in (auth, admin, sources, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud, onboarding):
     app.include_router(router.router)
 
 

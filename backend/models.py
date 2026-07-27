@@ -4,12 +4,13 @@ from sqlalchemy import (
     ARRAY,
     BigInteger,
     Boolean,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
     Text,
 )
-from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -117,11 +118,30 @@ class Record(Base, TimestampMixin):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
     duplicate_group_id: Mapped[int | None] = mapped_column(ForeignKey("duplicate_groups.id"))
+    ocr_status: Mapped[str] = mapped_column(Text, default="pending")
+    ocr_method: Mapped[str | None] = mapped_column(Text)
+    ocr_text: Mapped[str | None] = mapped_column(Text)
+    ocr_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    text_fingerprint: Mapped[str | None] = mapped_column(Text)
+    ocr_tsv = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', left(coalesce(ocr_text, ''), 200000))", persisted=True),
+    )
 
     source: Mapped[Source] = relationship()
     project: Mapped[Project | None] = relationship()
     record_type: Mapped[RecordType | None] = relationship()
     box: Mapped[Box | None] = relationship()
+
+
+class FolderRule(Base, TimestampMixin):
+    __tablename__ = "folder_rules"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    folder_prefix: Mapped[str] = mapped_column(Text, default="")
+    record_type_id: Mapped[int | None] = mapped_column(ForeignKey("record_types.id"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ScanRun(Base):

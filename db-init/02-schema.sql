@@ -5,7 +5,7 @@ CREATE TABLE schema_version (
     version     INT PRIMARY KEY,
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO schema_version (version) VALUES (1);
+INSERT INTO schema_version (version) VALUES (1), (2);
 
 CREATE TABLE users (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -71,7 +71,7 @@ CREATE TABLE boxes (
 
 CREATE TABLE duplicate_groups (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    match_kind   TEXT NOT NULL CHECK (match_kind IN ('hash', 'name_size')),
+    match_kind   TEXT NOT NULL CHECK (match_kind IN ('hash', 'name_size', 'content')),
     is_dismissed BOOLEAN NOT NULL DEFAULT FALSE,
     dismissed_by BIGINT REFERENCES users(id),
     dismissed_at TIMESTAMPTZ,
@@ -109,6 +109,14 @@ CREATE TABLE records (
     first_seen_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     duplicate_group_id BIGINT REFERENCES duplicate_groups(id),
+    ocr_status         TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (ocr_status IN ('pending', 'done', 'failed', 'skipped')),
+    ocr_method         TEXT,
+    ocr_text           TEXT,
+    ocr_at             TIMESTAMPTZ,
+    text_fingerprint   TEXT,
+    ocr_tsv            tsvector GENERATED ALWAYS AS
+                       (to_tsvector('english', left(coalesce(ocr_text, ''), 200000))) STORED,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -124,6 +132,20 @@ CREATE INDEX records_dupe_idx ON records (duplicate_group_id) WHERE duplicate_gr
 CREATE INDEX records_tags_gin ON records USING gin (tags);
 CREATE INDEX records_name_trgm ON records USING gin (name gin_trgm_ops);
 CREATE INDEX records_title_trgm ON records USING gin (title gin_trgm_ops);
+CREATE INDEX records_ocr_tsv_gin ON records USING gin (ocr_tsv);
+CREATE INDEX records_fp_trgm ON records USING gin (text_fingerprint gin_trgm_ops);
+
+CREATE TABLE folder_rules (
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_id      BIGINT NOT NULL REFERENCES sources(id),
+    folder_prefix  TEXT NOT NULL DEFAULT '',
+    record_type_id BIGINT REFERENCES record_types(id),
+    project_id     BIGINT REFERENCES projects(id),
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_id, folder_prefix)
+);
 
 CREATE TABLE scan_runs (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

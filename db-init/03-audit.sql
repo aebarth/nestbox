@@ -43,7 +43,7 @@ DECLARE
     t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY['users','sources','projects','record_types','boxes',
-                             'records','alerts','duplicate_groups']
+                             'records','alerts','duplicate_groups','folder_rules']
     LOOP
         EXECUTE format(
             'CREATE TRIGGER %I_audit AFTER INSERT OR UPDATE ON %I
@@ -70,7 +70,7 @@ DECLARE
     t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY['users','sources','projects','record_types','boxes',
-                             'records','alerts','duplicate_groups']
+                             'records','alerts','duplicate_groups','folder_rules']
     LOOP
         EXECUTE format(
             'CREATE TRIGGER %I_touch BEFORE UPDATE ON %I

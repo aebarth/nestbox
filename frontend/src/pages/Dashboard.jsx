@@ -66,6 +66,28 @@ export default function Dashboard() {
         <Stat icon={Package} label="Boxes" value={s.boxes} to="/boxes" />
       </div>
 
+      {s.uncategorized > 0 && (
+        <Link to="/onboarding"
+              className="card flex items-center gap-4 border-amber-200 bg-amber-50 p-4 transition-shadow hover:shadow-md">
+          <div className="rounded-lg bg-amber-100 p-2.5 text-amber-600"><FileText size={20} /></div>
+          <div className="flex-1">
+            <div className="font-medium text-amber-900">
+              {s.uncategorized} record{s.uncategorized === 1 ? '' : 's'} without a record type
+            </div>
+            <div className="text-sm text-amber-700">
+              Use Auto-categorize to map folders to record types in bulk — no hand-tagging needed.
+            </div>
+          </div>
+          <span className="btn-primary">Auto-categorize</span>
+        </Link>
+      )}
+      {s.ocr_pending > 0 && (
+        <p className="text-xs text-slate-500">
+          Text extraction in progress: {s.ocr_pending} document{s.ocr_pending === 1 ? '' : 's'} queued
+          (content search and content-duplicate detection improve as this completes).
+        </p>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="card p-5">
           <div className="mb-3 flex items-center justify-between">

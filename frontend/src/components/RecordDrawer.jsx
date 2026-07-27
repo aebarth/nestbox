@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Printer, X } from 'lucide-react'
+import { Eye, Printer, ScanText, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../services/api.js'
+import PdfViewer from './PdfViewer.jsx'
 import { Badge, Field, StatusBadge, fmtBytes, fmtDate, useToast } from './ui.jsx'
 
 function TagInput({ value, onChange }) {
@@ -31,9 +32,66 @@ function TagInput({ value, onChange }) {
   )
 }
 
+function OcrPanel({ recordId }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const [expanded, setExpanded] = useState(false)
+  const text = useQuery({
+    queryKey: ['record-text', recordId],
+    queryFn: () => api.get(`/api/records/${recordId}/text`),
+    refetchInterval: (query) => (query.state.data?.ocr_status === 'pending' ? 10_000 : false),
+  })
+  const rerun = useMutation({
+    mutationFn: () => api.post(`/api/records/${recordId}/ocr`),
+    onSuccess: (r) => {
+      toast(r.detail)
+      queryClient.invalidateQueries({ queryKey: ['record-text', recordId] })
+    },
+  })
+  const t = text.data
+  if (!t) return null
+  const statusTone = { done: 'green', pending: 'blue', failed: 'red', skipped: 'slate' }[t.ocr_status]
+  return (
+    <div className="mt-6">
+      <div className="mb-2 flex items-center gap-2">
+        <ScanText size={15} className="text-slate-400" />
+        <h3 className="text-sm font-semibold">Document text</h3>
+        <Badge tone={statusTone}>{t.ocr_status}</Badge>
+        {t.ocr_method && t.ocr_status === 'done' && (
+          <span className="text-xs text-slate-400">
+            {t.ocr_method === 'tesseract' ? 'OCR' : 'embedded text'} · {t.chars.toLocaleString()} chars
+          </span>
+        )}
+        <button className="ml-auto text-xs text-amber-600 hover:underline"
+                onClick={() => rerun.mutate()} disabled={rerun.isPending || t.ocr_status === 'pending'}>
+          Re-extract
+        </button>
+      </div>
+      {t.ocr_status === 'pending' && (
+        <p className="text-xs text-slate-500">Queued — text extraction runs in the background.</p>
+      )}
+      {t.ocr_status === 'failed' && (
+        <p className="text-xs text-rose-600">Extraction failed: {t.ocr_method}</p>
+      )}
+      {t.ocr_status === 'done' && t.chars > 0 && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <p className={expanded ? 'whitespace-pre-wrap' : 'line-clamp-3 whitespace-pre-wrap'}>
+            {t.preview}
+          </p>
+          <button className="mt-1 text-amber-600 hover:underline"
+                  onClick={() => setExpanded(!expanded)}>
+            {expanded ? 'Show less' : 'Show more'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function RecordDrawer({ recordId, onClose, isAdmin }) {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const [viewing, setViewing] = useState(false)
   const record = useQuery({
     queryKey: ['record', recordId],
     queryFn: () => api.get(`/api/records/${recordId}`),
@@ -116,6 +174,11 @@ export default function RecordDrawer({ recordId, onClose, isAdmin }) {
                 <p className="truncate text-xs text-slate-500">{r.source_name} · {r.path}</p>
               </div>
               <div className="flex shrink-0 gap-2">
+                {r.status !== 'missing' && (
+                  <button className="btn-secondary" onClick={() => setViewing(true)} title="View the PDF">
+                    <Eye size={15} /> View
+                  </button>
+                )}
                 <button className="btn-secondary" onClick={printLabel} title="Print label">
                   <Printer size={15} /> Label
                 </button>
@@ -212,6 +275,8 @@ export default function RecordDrawer({ recordId, onClose, isAdmin }) {
               </div>
             )}
 
+            <OcrPanel recordId={recordId} />
+
             <div className="mt-6">
               <h3 className="mb-2 text-sm font-semibold">History</h3>
               <ul className="space-y-2">
@@ -232,6 +297,7 @@ export default function RecordDrawer({ recordId, onClose, isAdmin }) {
           </>
         )}
       </div>
+      {viewing && r && <PdfViewer record={r} onClose={() => setViewing(false)} />}
     </div>
   )
 }

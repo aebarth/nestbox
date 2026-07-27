@@ -9,6 +9,7 @@ import Boxes from './pages/Boxes.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Files from './pages/Files.jsx'
 import Login from './pages/Login.jsx'
+import Onboarding from './pages/Onboarding.jsx'
 import RecordLink from './pages/RecordLink.jsx'
 import Reports from './pages/Reports.jsx'
 import Wizard from './pages/Wizard.jsx'
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="/boxes" element={<Boxes />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/onboarding" element={user.role === 'admin' ? <Onboarding /> : <Navigate to="/" />} />
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" />} />
           <Route path="/r/:uuid" element={<RecordLink />} />
           <Route path="*" element={<Navigate to="/" />} />

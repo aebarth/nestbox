@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 import connectors
 from connectors.base import RemoteFile
-from models import Alert, DuplicateGroup, FileEvent, Record, ScanRun, Source
+from models import Alert, DuplicateGroup, FileEvent, FolderRule, Record, RecordType, ScanRun, Source
 from services.hashing import sha256_stream
 
 log = logging.getLogger("nestbox.scanner")
@@ -147,6 +147,7 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
         if content_changed:
             add_event(db, record, run, "modified", old=old, new=_file_snapshot(f),
                       alert=source.is_monitored)
+            record.ocr_status = "pending"  # text needs re-extraction
             stats["modified"] += 1
 
         record.size_bytes, record.file_mtime = f.size, f.mtime
@@ -197,6 +198,13 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
         else:
             unmatched_new.append((f, algo, value))
 
+    rules = db.execute(
+        select(FolderRule).where(
+            FolderRule.source_id == source.id, FolderRule.is_active.is_(True)
+        )
+    ).scalars().all()
+    rules.sort(key=lambda r: len(r.folder_prefix), reverse=True)  # longest prefix wins
+
     for f, algo, value in unmatched_new:
         record = Record(
             source_id=source.id,
@@ -211,6 +219,22 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
             title=f.name.rsplit(".", 1)[0],
             status="inbox" if is_inbox else "active",
         )
+        rule = next(
+            (r for r in rules if _dirname(f.path).startswith(r.folder_prefix)
+             or r.folder_prefix == ""),
+            None,
+        )
+        if rule is not None:
+            record.record_type_id = rule.record_type_id
+            record.project_id = rule.project_id
+            if rule.record_type_id:
+                rt = db.get(RecordType, rule.record_type_id)
+                if rt and rt.retention_years and f.mtime:
+                    from datetime import timedelta
+
+                    record.retention_until = (
+                        f.mtime + timedelta(days=365 * rt.retention_years)
+                    ).date()
         db.add(record)
         db.flush()
         add_event(db, record, run, "discovered", new=_file_snapshot(f),

@@ -7,9 +7,15 @@ an append-only audit trail suitable for regulated recordkeeping (FDA QMSR / ISO 
 environments).
 
 - **Find**: import file name, date, size, and location from every repository you point it at
-- **Categorize**: project, record type, lot number, part number, tags, notes
+- **Read**: built-in PDF viewer, plus OCR (Tesseract) on scanned documents — search your
+  records by what's *inside* them, not just their names
+- **Categorize**: project, record type, lot number, part number, tags, notes — with a bulk
+  **Auto-categorize** flow that maps your existing folder structure to record types in one
+  pass (and keeps the rules for future scans), so thousands of legacy records don't need
+  hand-tagging
 - **Monitor**: scheduled scans detect renamed, moved, modified, and deleted files and raise alerts
-- **Deduplicate**: content-hash duplicate detection across sources
+- **Deduplicate**: exact duplicates by content hash, and *near*-duplicates by text similarity —
+  the same paper document scanned twice is caught even though the files' bytes differ
 - **Box tracking**: every record knows which physical box it lives in; print QR labels
 - **Scan-to-Shelf wizard**: scan → name & categorize → print label → assign box → file the PDF
 - **Reports**: missing files, duplicates, retention-due, box inventory — CSV and PDF

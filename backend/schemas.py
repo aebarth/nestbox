@@ -159,6 +159,8 @@ class RecordOut(ORMModel):
     first_seen_at: datetime
     last_seen_at: datetime
     duplicate_group_id: int | None
+    ocr_status: str = "pending"
+    ocr_method: str | None = None
 
 
 class FileEventOut(ORMModel):

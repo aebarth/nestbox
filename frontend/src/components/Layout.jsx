@@ -9,6 +9,7 @@ import {
   ScanLine,
   Settings,
   FileBarChart,
+  Wand2,
 } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { api } from '../services/api.js'
@@ -67,6 +68,19 @@ export default function Layout({ user, children }) {
               )}
             </NavLink>
           ))}
+          {user.role === 'admin' && (
+            <NavLink
+              to="/onboarding"
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <Wand2 size={17} />
+              Auto-categorize
+            </NavLink>
+          )}
           {user.role === 'admin' && (
             <NavLink
               to="/admin"

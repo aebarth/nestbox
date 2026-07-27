@@ -24,6 +24,7 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr poppler-utils
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
