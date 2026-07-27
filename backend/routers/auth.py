@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -8,10 +8,14 @@ import schemas
 from database import get_db, set_actor
 from models import Setting, User
 from security import (
+    check_login_allowed,
     clear_token,
+    equalize_timing,
     get_current_user,
     hash_password,
     issue_token,
+    record_login_failure,
+    record_login_success,
     verify_password,
 )
 
@@ -47,10 +51,17 @@ def setup(body: schemas.SetupIn, response: Response, db: Session = Depends(get_d
 
 
 @router.post("/login", response_model=schemas.UserOut)
-def login(body: schemas.LoginIn, response: Response, db: Session = Depends(get_db)):
+def login(body: schemas.LoginIn, request: Request, response: Response,
+          db: Session = Depends(get_db)):
+    client = request.client.host if request.client else "unknown"
+    check_login_allowed(client, body.username)
     user = db.execute(select(User).where(User.username == body.username)).scalar_one_or_none()
+    if user is None:
+        equalize_timing()
     if user is None or not user.is_active or not verify_password(body.password, user.password_hash):
+        record_login_failure(client, body.username)
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    record_login_success(client, body.username)
     set_actor(db, user.username)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()

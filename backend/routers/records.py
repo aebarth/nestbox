@@ -5,13 +5,22 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
+import re
+
 import schemas
 from database import get_db
 from models import Box, FileEvent, Project, Record, RecordType, User
-from security import get_current_user
+from security import get_current_user, require_admin
 from services.scanner import add_event
 
 router = APIRouter(prefix="/api/records", tags=["records"])
+
+
+def safe_header_filename(name: str) -> str:
+    """Filenames come from scanned filesystems — strip anything that could
+    break out of the Content-Disposition header."""
+    cleaned = re.sub(r'[^\w.\- ()]', "_", name)[:150]
+    return cleaned or "document.pdf"
 
 RECORD_OPTS = (
     joinedload(Record.source),
@@ -133,7 +142,13 @@ def record_content(record_id: int, db: Session = Depends(get_db),
     return StreamingResponse(
         stream,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{r.name}"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_header_filename(r.name)}"',
+            # PDFs are untrusted scanned input: sandbox blocks any active
+            # content if the file is opened top-level in a browser tab
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -236,7 +251,7 @@ def change_status(
     record_id: int,
     body: schemas.RecordStatusIn,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),  # lifecycle changes are admin-only
 ):
     r = db.execute(
         select(Record).options(*RECORD_OPTS).where(Record.id == record_id)

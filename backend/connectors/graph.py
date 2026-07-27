@@ -121,9 +121,10 @@ class GraphConnector:
         root = self._get(self._root_url()).json()
         parent_id = root["id"]
         for part in [p for p in rel_dir.split("/") if p]:
+            odata_name = part.replace("'", "''")  # OData string-literal escaping
             children = self._get(
                 f"{GRAPH}/drives/{self.drive_id}/items/{parent_id}/children"
-                f"?$filter=name eq '{part}'"
+                f"?$filter=name eq '{quote(odata_name)}'"
             ).json()
             match = next((c for c in children.get("value", []) if "folder" in c), None)
             if match:

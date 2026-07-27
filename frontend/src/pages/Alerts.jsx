@@ -18,6 +18,8 @@ export default function Alerts() {
     queryKey: ['alerts', filter],
     queryFn: () => api.get(`/api/alerts?status=${filter}&limit=200`),
   })
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/auth/me') })
+  const isAdmin = me.data?.role === 'admin'
 
   const review = useMutation({
     mutationFn: ({ id, body }) => api.post(`/api/alerts/${id}`, body),
@@ -100,7 +102,7 @@ export default function Alerts() {
               <select className="input" value={resolution} onChange={(e) => setResolution(e.target.value)}>
                 <option value="accepted">Accepted — the change was expected/authorized</option>
                 <option value="restored">Restored — the file was put back</option>
-                {resolving.alert_type === 'missing' && (
+                {resolving.alert_type === 'missing' && isAdmin && (
                   <option value="retired">Retired — the record is gone intentionally; retire it</option>
                 )}
                 <option value="false_positive">False positive</option>

@@ -63,6 +63,9 @@ def review_alert(
     elif body.status == "resolved":
         if body.resolution not in ("accepted", "restored", "retired", "false_positive"):
             raise HTTPException(status_code=422, detail="Invalid resolution")
+        if body.resolution == "retired" and user.role != "admin":
+            raise HTTPException(status_code=403,
+                                detail="Retiring a record requires an admin")
         a.status = "resolved"
         a.resolution = body.resolution
         a.resolved_by = user.id

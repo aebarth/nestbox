@@ -28,7 +28,7 @@ services:
       - ${NESTBOX_SOURCES_PATH:-./sample-data/sources}:/sources:rw
       - ${NESTBOX_INBOX_PATH:-./sample-data/inbox}:/inbox:rw
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy

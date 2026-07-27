@@ -52,7 +52,17 @@ def google_authorize(source_id: int, db: Session = Depends(get_db)):
     source = db.get(Source, source_id)
     if source is None or source.kind != "gdrive":
         raise HTTPException(status_code=404, detail="Google Drive source not found")
-    state = jwt.encode({"source_id": source_id, "purpose": "gauth"}, SECRET_KEY, algorithm="HS256")
+    from datetime import datetime, timedelta, timezone
+
+    state = jwt.encode(
+        {
+            "source_id": source_id,
+            "purpose": "gauth",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
     url, _ = _flow().authorization_url(
         access_type="offline", prompt="consent", state=state, include_granted_scopes="true"
     )
@@ -102,12 +112,14 @@ def graph_drives(q: str = ""):
     headers = {"Authorization": f"Bearer {token}"}
     results = []
     if "@" in q:
-        resp = rq.get(f"{GRAPH}/users/{q}/drive", headers=headers, timeout=30)
+        from urllib.parse import quote
+
+        resp = rq.get(f"{GRAPH}/users/{quote(q)}/drive", headers=headers, timeout=30)
         if resp.ok:
             d = resp.json()
             results.append({"drive_id": d["id"], "name": f"OneDrive — {q}", "kind": "onedrive"})
     else:
-        resp = rq.get(f"{GRAPH}/sites?search={q or '*'}", headers=headers, timeout=30)
+        resp = rq.get(f"{GRAPH}/sites", params={"search": q or "*"}, headers=headers, timeout=30)
         resp.raise_for_status()
         for site in resp.json().get("value", [])[:10]:
             drives = rq.get(f"{GRAPH}/sites/{site['id']}/drives", headers=headers, timeout=30)

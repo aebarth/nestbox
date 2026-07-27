@@ -47,6 +47,21 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true   # surfaces new advisories without blocking releases
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pip-audit && pip-audit -r backend/requirements.txt --no-deps
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install --package-lock-only && npm audit --omit=dev
+        working-directory: frontend
+
   publish-images:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [backend-tests, frontend-build]

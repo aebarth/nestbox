@@ -30,8 +30,11 @@ class LocalConnector:
             )
 
     def _abs(self, rel_path: str) -> Path:
+        root = self.root.resolve()
         p = (self.root / rel_path.lstrip("/")).resolve()
-        if not str(p).startswith(str(self.root.resolve())):
+        # is_relative_to (not startswith): "/sources/qa2" must not pass for a
+        # root of "/sources/qa"
+        if not p.is_relative_to(root):
             raise ValueError(f"Path escapes the source root: {rel_path}")
         return p
 

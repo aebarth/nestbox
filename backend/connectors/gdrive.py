@@ -16,6 +16,11 @@ from .base import RemoteFile
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
+def _q(value: str) -> str:
+    """Escape a string literal for a Drive API query."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 class GDriveConnector:
     def __init__(self, source: Source):
         self.source = source
@@ -65,7 +70,7 @@ class GDriveConnector:
                 resp = (
                     svc.files()
                     .list(
-                        q=f"'{folder_id}' in parents and trashed=false",
+                        q=f"'{_q(folder_id)}' in parents and trashed=false",
                         fields="nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)",
                         pageSize=1000,
                         pageToken=page_token,
@@ -115,7 +120,7 @@ class GDriveConnector:
                 svc.files()
                 .list(
                     q=(
-                        f"'{parent}' in parents and name = '{part}' "
+                        f"'{_q(parent)}' in parents and name = '{_q(part)}' "
                         f"and mimeType = '{FOLDER_MIME}' and trashed=false"
                     ),
                     fields="files(id)",

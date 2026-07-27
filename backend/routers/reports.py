@@ -138,13 +138,21 @@ def status_summary(db: Session = Depends(get_db), user: User = Depends(get_curre
     }
 
 
+def _csv_safe(value):
+    """Blunt spreadsheet formula injection: file/lot/part values are untrusted
+    and Excel executes cells starting with = + - @."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t"):
+        return "'" + value
+    return value
+
+
 @router.get("/{name}.csv")
 def report_csv(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     cols, rows = _report_data(name, db)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(cols)
-    writer.writerows(rows)
+    writer.writerows([[_csv_safe(v) for v in row] for row in rows])
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
