@@ -103,4 +103,5 @@ API docs: http://localhost:8000/docs
 
 Apache 2.0 — free for any organization to use. See [LICENSE](LICENSE).
 
-Built by [Red Hen Admin](https://redhenadmin.com) for document control and recordkeeping teams.
+Learn more at [redhendev.com](https://redhendev.com) — built by
+[Red Hen Admin](https://redhenadmin.com) for document control and recordkeeping teams.
