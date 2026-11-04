@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 import connectors
 from connectors.base import RemoteFile
@@ -31,6 +31,11 @@ ALERT_SEVERITY = {
     "discovered": "info",
     "reappeared": "info",
 }
+
+# Large, rarely-needed text columns. Deferring them keeps full-table loads
+# (scan_source / detect_duplicates) from pulling up to ~1MB of OCR text per
+# row into memory on every scan. They are never read in those code paths.
+_DEFERRED_TEXT = (defer(Record.ocr_text), defer(Record.text_fingerprint), defer(Record.ocr_tsv))
 
 
 def now() -> datetime:
@@ -102,7 +107,9 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
     stats = {"seen": 0, "new": 0, "modified": 0, "moved": 0, "missing": 0, "reappeared": 0}
 
     existing = db.execute(
-        select(Record).where(
+        select(Record)
+        .options(*_DEFERRED_TEXT)
+        .where(
             Record.source_id == source.id,
             Record.status.notin_(("retired", "superseded")),
         )
@@ -256,7 +263,9 @@ def detect_duplicates(db: Session) -> int:
     """Group live records with identical content (per hash algo), plus a
     name+size fallback for records whose hashes aren't comparable."""
     live = db.execute(
-        select(Record).where(
+        select(Record)
+        .options(*_DEFERRED_TEXT)
+        .where(
             Record.status.notin_(("retired", "superseded", "missing")),
         )
     ).scalars().all()
