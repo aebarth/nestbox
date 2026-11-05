@@ -5,7 +5,7 @@ CREATE TABLE schema_version (
     version     INT PRIMARY KEY,
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO schema_version (version) VALUES (1), (2);
+INSERT INTO schema_version (version) VALUES (1), (2), (3);
 
 CREATE TABLE users (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -155,11 +155,14 @@ CREATE TABLE scan_runs (
     status      TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'error')),
     started_at  TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
+    locked_at   TIMESTAMPTZ,                     -- lease: when a worker claimed the run
+    lease_until TIMESTAMPTZ,                     -- lease: reclaimable once past this
     stats       JSONB NOT NULL DEFAULT '{}',
     error_text  TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX scan_runs_status_idx ON scan_runs (status) WHERE status IN ('queued', 'running');
+CREATE INDEX ix_scan_runs_status ON scan_runs (status, id);
 
 CREATE TABLE file_events (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -181,7 +184,7 @@ CREATE TABLE alerts (
     alert_type    TEXT NOT NULL,
     severity      TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
     status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'acknowledged', 'resolved')),
-    resolution    TEXT CHECK (resolution IN ('accepted', 'restored', 'retired', 'false_positive')),
+    resolution    CHECK (resolution IN ('accepted', 'restored', 'retired', 'false_positive')),
     resolved_by   BIGINT REFERENCES users(id),
     resolved_at   TIMESTAMPTZ,
     notes         TEXT NOT NULL DEFAULT '',
