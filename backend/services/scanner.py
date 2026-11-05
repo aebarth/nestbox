@@ -7,11 +7,12 @@ Identity rules:
     categorization, box assignment and history follow the file.
 """
 import logging
+import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, defer
 
 import connectors
@@ -40,6 +41,29 @@ _DEFERRED_TEXT = (defer(Record.ocr_text), defer(Record.text_fingerprint), defer(
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# How long a worker's claim on a running scan_run is valid before the reaper may
+# take it back. Refreshed per source in execute_run so long multi-source scans
+# keep their lease. Raise NESTBOX_RUN_LEASE_SECONDS for very large single sources.
+RUN_LEASE_SECONDS = int(os.environ.get("NESTBOX_RUN_LEASE_SECONDS", "1800"))
+
+
+def _heartbeat(db: Session, run: ScanRun) -> None:
+    """Extend this run's lease so a long scan isn't reaped mid-flight.
+
+    Commits (unlike the surrounding flush-only scan work) so the extension is
+    durable across a crash; as a side effect each source's changes are committed
+    as they complete, which also makes progress survive a worker death.
+    """
+    db.execute(
+        text(
+            "UPDATE scan_runs SET lease_until = now() + make_interval(secs => :lease) "
+            "WHERE id = :id AND status = 'running'"
+        ),
+        {"lease": RUN_LEASE_SECONDS, "id": run.id},
+    )
+    db.commit()
 
 
 def add_event(
@@ -317,10 +341,18 @@ def detect_duplicates(db: Session) -> int:
 
 
 def execute_run(db: Session, run: ScanRun) -> None:
-    """Worker entry: execute one queued scan_run inside the caller's session."""
-    run.status = "running"
-    run.started_at = now()
-    db.commit()
+    """Worker entry: execute one queued scan_run inside the caller's session.
+
+    The worker has already claimed the run (status='running', lease stamped,
+    committed) before calling here; we only do the work and set the final
+    status. _heartbeat() extends the lease per source so a long run is never
+    reaped mid-flight.
+    """
+    if run.status != "running":
+        # Direct/test invocation without a prior claim: behave as before.
+        run.status = "running"
+        run.started_at = now()
+        db.commit()
 
     try:
         if run.source_id:
@@ -335,6 +367,7 @@ def execute_run(db: Session, run: ScanRun) -> None:
         for source in sources:
             if source is None or not source.is_active:
                 continue
+            _heartbeat(db, run)  # keep the lease alive across long runs
             try:
                 if run.kind == "integrity":
                     from services.integrity import check_source
