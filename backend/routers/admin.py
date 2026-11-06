@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import schemas
 from database import get_db
-from models import AuditLog, Setting, User
+from models import AuditLog, Backup, Setting, User
 from security import hash_password, require_admin
+from services import lifecycle
+from services.lifecycle import LifecycleError
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -118,3 +121,88 @@ def audit(
         }
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Database lifecycle (Phase 2.1, #9): backup / restore / reset
+# ---------------------------------------------------------------------------
+
+class BackupCreateIn(BaseModel):
+    notes: str = ""
+
+
+class ConfirmIn(BaseModel):
+    confirm: str
+
+
+def _backup_out(b: Backup) -> dict:
+    return {
+        "id": b.id,
+        "filename": b.filename,
+        "size_bytes": b.size_bytes,
+        "sha256": b.sha256,
+        "kind": b.kind,
+        "created_by": b.created_by,
+        "notes": b.notes,
+        "created_at": b.created_at,
+    }
+
+
+@router.get("/backups")
+def list_backups(db: Session = Depends(get_db)):
+    rows = db.execute(select(Backup).order_by(Backup.created_at.desc(), Backup.id.desc())).scalars().all()
+    return [_backup_out(b) for b in rows]
+
+
+@router.post("/backups", status_code=201)
+def create_backup_endpoint(
+    body: BackupCreateIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    try:
+        backup = lifecycle.create_backup(
+            db, kind="manual", actor_username=admin.username,
+            actor_user_id=admin.id, notes=body.notes,
+        )
+    except LifecycleError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return _backup_out(backup)
+
+
+@router.post("/backups/{backup_id}/restore")
+def restore_backup_endpoint(
+    backup_id: int,
+    body: ConfirmIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    if body.confirm != "RESTORE":
+        raise HTTPException(
+            status_code=400,
+            detail='Restore replaces the live database. Send {"confirm": "RESTORE"} to proceed.',
+        )
+    try:
+        return lifecycle.restore_backup(db, backup_id, actor_username=admin.username)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except LifecycleError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/reset")
+def reset_database_endpoint(
+    body: ConfirmIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    if body.confirm != "RESET":
+        raise HTTPException(
+            status_code=400,
+            detail='Reset wipes ALL data (a pre-reset backup is taken automatically). '
+                   'Send {"confirm": "RESET"} to proceed.',
+        )
+    try:
+        return lifecycle.reset_database(db, actor_username=admin.username)
+    except LifecycleError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
