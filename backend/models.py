@@ -187,6 +187,23 @@ class Alert(Base, TimestampMixin):
     record: Mapped[Record] = relationship()
 
 
+class Backup(Base):
+    """A pg_dump backup of the nestbox database (Phase 2.1, #9).
+
+    Not covered by the trigger-based audit loop (retention pruning deletes
+    rows); services/lifecycle.py writes explicit audit_log entries instead.
+    """
+    __tablename__ = "backups"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    filename: Mapped[str] = mapped_column(Text, unique=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    sha256: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text, default="manual")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
