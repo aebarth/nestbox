@@ -4,6 +4,7 @@ Requires pg_dump/pg_restore on the test host (CI installs postgresql-client).
 Each test gets its own temp backup dir so dumps never collide.
 """
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def test_backup_creates_file_row_and_audit(admin_client):
     assert body["kind"] == "manual"
     assert body["created_by"] is not None
 
-    path = Path(__import__("os").environ["NESTBOX_BACKUP_PATH"]) / body["filename"]
+    path = Path(os.environ["NESTBOX_BACKUP_PATH"]) / body["filename"]
     assert path.is_file(), "dump file was not written to the backup directory"
     assert _sha256(path) == body["sha256"], "recorded checksum does not match the file"
 
@@ -85,20 +86,14 @@ def test_restore_roundtrip(admin_client, db_session):
         assert names == {"keep.pdf"}, f"restore did not roll back post-backup data: {names}"
 
     # the restore itself is audited (on the restored schema)
-    with _fresh_session() as s:
-        from sqlalchemy import select
-
-        audit = s.execute(
-            select(s.get.__self__ and None) if False else None  # placeholder, replaced below
-        ) if False else None
     from sqlalchemy import text
 
     with _fresh_session() as s:
-        rows = s.execute(text(
+        audit_rows = s.execute(text(
             "SELECT username, new_row FROM audit_log WHERE table_name = 'lifecycle'"
         )).all()
-    assert any(r.new_row.get("op") == "restore" and r.username == "admin" for r in rows), \
-        f"no restore audit row: {[(r.username, r.new_row) for r in rows]}"
+    assert any(r.new_row.get("op") == "restore" and r.username == "admin" for r in audit_rows), \
+        f"no restore audit row: {[(r.username, r.new_row) for r in audit_rows]}"
 
 
 def test_restore_requires_confirmation(admin_client):
@@ -130,7 +125,7 @@ def test_reset_wipes_to_clean_slate(client, admin_client):
     assert body["reset"] is True
 
     # a pre-reset backup exists on disk (recoverability)
-    pre = Path(__import__("os").environ["NESTBOX_BACKUP_PATH"]) / body["pre_reset_backup"]
+    pre = Path(os.environ["NESTBOX_BACKUP_PATH"]) / body["pre_reset_backup"]
     assert pre.is_file(), "reset did not take a pre-reset backup"
 
     # back to first-boot state: setup flow re-runs, no data rows
@@ -194,7 +189,7 @@ def test_prune_retention(database):
         remaining = s.execute(select(Backup).order_by(Backup.id.desc())).scalars().all()
         assert len(remaining) == 2
 
-    d = Path(__import__("os").environ["NESTBOX_BACKUP_PATH"])
+    d = Path(os.environ["NESTBOX_BACKUP_PATH"])
     files = [p.name for p in d.iterdir()] if d.exists() else []
     expected = {b.filename for b in remaining}
     assert set(files) == expected, f"pruned files still on disk: {files} vs {expected}"
