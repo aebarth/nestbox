@@ -7,6 +7,7 @@ import Admin from './pages/Admin.jsx'
 import Alerts from './pages/Alerts.jsx'
 import Boxes from './pages/Boxes.jsx'
 import Dashboard from './pages/Dashboard.jsx'
+import Database from './pages/Database.jsx'
 import Files from './pages/Files.jsx'
 import Login from './pages/Login.jsx'
 import Onboarding from './pages/Onboarding.jsx'
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/onboarding" element={user.role === 'admin' ? <Onboarding /> : <Navigate to="/" />} />
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" />} />
+          <Route path="/admin/database" element={user.role === 'admin' ? <Database /> : <Navigate to="/" />} />
           <Route path="/r/:uuid" element={<RecordLink />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
