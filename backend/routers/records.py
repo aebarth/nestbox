@@ -213,30 +213,62 @@ def categorize(
     if r.status in ("retired", "superseded"):
         raise HTTPException(status_code=422, detail=f"Record is {r.status} and read-only")
 
+    # model_fields_set tells us which fields the client actually sent: omitted =
+    # unchanged, explicit null/'' = clear, explicit value = set. This is what
+    # makes clearing nullable FKs (and blanking strings) possible via PATCH.
+    provided = body.model_fields_set
     changes = {}
-    for field in ("title", "project_id", "record_type_id", "lot_number", "part_number", "tags", "notes"):
+
+    # NOT NULL string fields: explicit null or '' -> "".
+    for field in ("title", "lot_number", "part_number", "notes"):
+        if field not in provided:
+            continue
         value = getattr(body, field)
-        if value is not None and getattr(r, field) != value:
+        new = "" if value is None else value
+        if new != getattr(r, field):
+            changes[field] = {"from": getattr(r, field), "to": new}
+            setattr(r, field, new)
+
+    # tags: NOT NULL array; explicit null or [] -> [].
+    if "tags" in provided:
+        new = [] if body.tags is None else list(body.tags)
+        if new != r.tags:
+            changes["tags"] = {"from": r.tags, "to": new}
+            r.tags = new
+
+    # Nullable FK fields: explicit null -> clear.
+    for field in ("project_id", "record_type_id"):
+        if field not in provided:
+            continue
+        value = getattr(body, field)
+        if value != getattr(r, field):
             changes[field] = {"from": getattr(r, field), "to": value}
             setattr(r, field, value)
 
-    if body.box_id is not None and body.box_id != r.box_id:
-        box = db.get(Box, body.box_id)
-        if box is None:
-            raise HTTPException(status_code=404, detail="Box not found")
-        if box.status != "open":
-            raise HTTPException(status_code=422, detail=f"Box {box.box_number} is {box.status}")
-        changes["box_id"] = {"from": r.box_id, "to": body.box_id}
-        r.box_id = body.box_id
-        r.filed_at = datetime.now(timezone.utc)
-        add_event(db, r, None, "filed", new={"box": box.box_number}, alert=False)
+    # box_id: explicit null -> unfile; a real id must reference an open box.
+    if "box_id" in provided and body.box_id != r.box_id:
+        if body.box_id is None:
+            changes["box_id"] = {"from": r.box_id, "to": None}
+            r.box_id = None
+        else:
+            box = db.get(Box, body.box_id)
+            if box is None:
+                raise HTTPException(status_code=404, detail="Box not found")
+            if box.status != "open":
+                raise HTTPException(status_code=422, detail=f"Box {box.box_number} is {box.status}")
+            changes["box_id"] = {"from": r.box_id, "to": body.box_id}
+            r.box_id = body.box_id
+            r.filed_at = datetime.now(timezone.utc)
+            add_event(db, r, None, "filed", new={"box": box.box_number}, alert=False)
 
-    if body.record_type_id is not None or (changes and r.record_type_id):
+    # Retention: recompute when the record type is set/cleared or a filing lands.
+    # Clearing the type (rt is None) drops retention_until too.
+    if "record_type_id" in provided or (changes and r.record_type_id):
         rt = db.get(RecordType, r.record_type_id) if r.record_type_id else None
         if rt and rt.retention_years:
             base = r.filed_at or r.first_seen_at or datetime.now(timezone.utc)
             r.retention_until = (base + timedelta(days=365 * rt.retention_years)).date()
-        elif rt:
+        else:
             r.retention_until = None
 
     if changes:

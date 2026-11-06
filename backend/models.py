@@ -153,6 +153,8 @@ class ScanRun(Base):
     status: Mapped[str] = mapped_column(Text, default="queued")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stats: Mapped[dict] = mapped_column(JSONB, default=dict)
     error_text: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")

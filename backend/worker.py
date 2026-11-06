@@ -5,17 +5,22 @@ backend only through Postgres:
   * every 10s: pick up queued scan_runs (the API's "Scan Now" button)
   * every minute: check cron schedules (global scan, weekly integrity,
     per-source overrides) and enqueue scheduled runs
+
+Run claiming is lease-based: a run is claimed with UPDATE ... FOR UPDATE SKIP
+LOCKED and stamped with locked_at/lease_until. A worker that dies mid-run
+leaves the run 'running' past its lease; the reaper below returns it to
+'queued' so it is retried instead of stuck forever.
 """
 import logging
 import time
 from datetime import datetime, timezone
 
 from croniter import croniter
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from database import SessionLocal
 from models import ScanRun, Setting, Source
-from services.scanner import execute_run
+from services.scanner import RUN_LEASE_SECONDS, execute_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 log = logging.getLogger("nestbox.worker")
@@ -59,6 +64,63 @@ def check_schedules(db, minute: datetime) -> None:
             enqueue_scheduled(db, "scan", source.id)
 
 
+def reap_stale_runs(db) -> None:
+    """Return 'running' runs past their lease to 'queued'.
+
+    Covers a worker that crashed or was OOM-killed mid-run: without this the run
+    would sit in 'running' forever. Only runs whose lease_until has passed are
+    touched, so an actively-heartbeating run is never disturbed.
+    """
+    ids = db.execute(
+        text(
+            """
+            UPDATE scan_runs
+               SET status = 'queued', locked_at = NULL, lease_until = NULL
+             WHERE status = 'running'
+               AND lease_until IS NOT NULL
+               AND lease_until < now()
+            RETURNING id
+            """
+        )
+    ).scalars().all()
+    if ids:
+        db.commit()
+        log.warning("Reaped %d stale run(s) past their lease: %s", len(ids), list(ids))
+
+
+def claim_next_run(db) -> ScanRun | None:
+    """Atomically claim the oldest queued run.
+
+    UPDATE ... FOR UPDATE SKIP LOCKED guarantees two workers can never grab the
+    same row, and stamping locked_at/lease_until makes a crashed worker's run
+    recoverable (see reap_stale_runs). Returns the claimed ORM object or None.
+    """
+    run_id = db.execute(
+        text(
+            """
+            UPDATE scan_runs
+               SET status = 'running',
+                   started_at = COALESCE(started_at, now()),
+                   locked_at = now(),
+                   lease_until = now() + make_interval(secs => :lease)
+             WHERE id = (
+                 SELECT s.id FROM scan_runs s
+                  WHERE s.status = 'queued'
+                  ORDER BY s.id
+                  LIMIT 1
+                  FOR UPDATE SKIP LOCKED
+             )
+            RETURNING id
+            """
+        ),
+        {"lease": RUN_LEASE_SECONDS},
+    ).scalar_one_or_none()
+    if run_id is None:
+        return None
+    db.commit()
+    return db.get(ScanRun, run_id)
+
+
 def main() -> None:
     log.info("Nestbox worker started")
     try:
@@ -77,9 +139,8 @@ def main() -> None:
                 if minute != last_minute_checked:
                     last_minute_checked = minute
                     check_schedules(db, minute)
-                run = db.execute(
-                    select(ScanRun).where(ScanRun.status == "queued").order_by(ScanRun.id)
-                ).scalars().first()
+                reap_stale_runs(db)
+                run = claim_next_run(db)
                 if run is not None:
                     log.info("Executing run %s (%s)", run.id, run.kind)
                     execute_run(db, run)
