@@ -5,7 +5,7 @@ CREATE TABLE schema_version (
     version     INT PRIMARY KEY,
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO schema_version (version) VALUES (1), (2), (3);
+INSERT INTO schema_version (version) VALUES (1), (2), (3), (4);
 
 CREATE TABLE users (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -193,6 +193,21 @@ CREATE TABLE alerts (
 );
 CREATE INDEX alerts_open_idx ON alerts (status, severity) WHERE status <> 'resolved';
 CREATE INDEX alerts_record_idx ON alerts (record_id);
+
+-- Phase 2.1 (#9): database lifecycle. Tracks pg_dump backups so admins can
+-- restore / prune with checksum verification. Deliberately NOT in the
+-- trigger-based audit loop (03-audit.sql) because retention pruning deletes
+-- rows; the lifecycle service writes explicit audit_log entries instead.
+CREATE TABLE backups (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    filename    TEXT NOT NULL UNIQUE,
+    size_bytes  BIGINT NOT NULL DEFAULT 0,
+    sha256      TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'manual' CHECK (kind IN ('manual', 'scheduled')),
+    created_by  BIGINT REFERENCES users(id),
+    notes       TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 CREATE TABLE audit_log (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
