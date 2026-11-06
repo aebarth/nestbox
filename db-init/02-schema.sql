@@ -184,7 +184,7 @@ CREATE TABLE alerts (
     alert_type    TEXT NOT NULL,
     severity      TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
     status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'acknowledged', 'resolved')),
-    resolution    CHECK (resolution IN ('accepted', 'restored', 'retired', 'false_positive')),
+    resolution    TEXT CHECK (resolution IN ('accepted', 'restored', 'retired', 'false_positive')),
     resolved_by   BIGINT REFERENCES users(id),
     resolved_at   TIMESTAMPTZ,
     notes         TEXT NOT NULL DEFAULT '',
