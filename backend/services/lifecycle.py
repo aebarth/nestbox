@@ -14,6 +14,7 @@ pg_dump/pg_restore are shell-invoked; the backend image ships
 postgresql-client for that reason.
 """
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -75,13 +76,17 @@ def _sha256(path: Path) -> str:
 
 
 def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dict) -> None:
-    """Explicit audit_log entry for a lifecycle action (see module docstring)."""
+    """Explicit audit_log entry for a lifecycle action (see module docstring).
+
+    The detail is serialized here because untyped text() parameters are not
+    adapted to JSONB by psycopg2.
+    """
     db.execute(
         text(
             "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
-            "VALUES (:u, 'lifecycle', :pk, :a, :d, '{}')"
+            "VALUES (:u, 'lifecycle', :pk, :a, :d::jsonb, '{}')"
         ),
-        {"u": actor, "pk": row_pk, "a": action, "d": detail},
+        {"u": actor, "pk": row_pk, "a": action, "d": json.dumps(detail)},
     )
 
 
@@ -250,7 +255,7 @@ def reset_database(db: Session, actor_username: str = "system") -> dict:
         cur.execute(
             "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
             "VALUES (%s, 'lifecycle', NULL, 'UPDATE', %s::jsonb, '{}')",
-            (actor_username, '{"op": "reset", "pre_reset_backup": "' + pre.filename + '"}'),
+            (actor_username, json.dumps({"op": "reset", "pre_reset_backup": pre.filename})),
         )
         raw.commit()
     finally:
