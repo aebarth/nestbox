@@ -4,7 +4,7 @@ Runs as its own container so long scans never block the API. Talks to the
 backend only through Postgres:
   * every 10s: pick up queued scan_runs (the API's "Scan Now" button)
   * every minute: check cron schedules (global scan, weekly integrity,
-    per-source overrides) and enqueue scheduled runs
+    per-source overrides, scheduled database backups) and enqueue/execute
 
 Run claiming is lease-based: a run is claimed with UPDATE ... FOR UPDATE SKIP
 LOCKED and stamped with locked_at/lease_until. A worker that dies mid-run
@@ -62,6 +62,20 @@ def check_schedules(db, minute: datetime) -> None:
     ).scalars():
         if source.scan_cron and cron_matches(source.scan_cron, minute):
             enqueue_scheduled(db, "scan", source.id)
+
+    # Scheduled database backups (Phase 2.1, #9): settings key 'backup_cron',
+    # e.g. "0 3 * * *" for 03:00 daily. Runs inline (not via scan_runs) and
+    # prunes old dumps to NESTBOX_BACKUP_RETENTION afterwards. Failures are
+    # logged, never fatal to the loop.
+    backup_cron = settings.get("backup_cron")
+    if backup_cron and cron_matches(backup_cron, minute):
+        try:
+            from services import lifecycle
+
+            lifecycle.create_backup(db, kind="scheduled", actor_username="system")
+            lifecycle.prune_old_backups(db)
+        except Exception:
+            log.exception("Scheduled database backup failed")
 
 
 def reap_stale_runs(db) -> None:
