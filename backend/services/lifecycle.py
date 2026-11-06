@@ -78,13 +78,16 @@ def _sha256(path: Path) -> str:
 def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dict) -> None:
     """Explicit audit_log entry for a lifecycle action (see module docstring).
 
-    The detail is serialized here because untyped text() parameters are not
-    adapted to JSONB by psycopg2.
+    The detail is serialized to a JSON string here and cast with CAST():
+    untyped text() parameters are not adapted to JSONB by psycopg2, and the
+    `:name::jsonb` shorthand is NOT parsed as a bind parameter by SQLAlchemy
+    2.0 (a name immediately followed by another colon renders literally), so
+    an explicit CAST is required.
     """
     db.execute(
         text(
             "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
-            "VALUES (:u, 'lifecycle', :pk, :a, :d::jsonb, '{}')"
+            "VALUES (:u, 'lifecycle', :pk, :a, CAST(:d AS jsonb), '{}')"
         ),
         {"u": actor, "pk": row_pk, "a": action, "d": json.dumps(detail)},
     )
@@ -223,7 +226,7 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
             "op": "restore", "filename": backup.filename, "sha256": backup.sha256,
         })
         fresh.commit()
-    log.warning("Database restored from %s by %s", backup.filename, actor_username)
+    log.warning("Database restored from %s by %s", backup.filename, backup.sha256)
     return {"restored_from": backup.filename, "sha256": backup.sha256}
 
 
