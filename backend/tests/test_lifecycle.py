@@ -152,9 +152,16 @@ def test_reset_requires_confirmation(admin_client):
     assert "RESET" in r.json()["detail"]
 
 
-def test_non_admin_forbidden(client, admin_client):
-    # unauthenticated
-    assert client.get("/api/admin/backups").status_code == 401
+def test_non_admin_forbidden(admin_client):
+    from fastapi.testclient import TestClient
+
+    from main import app
+
+    # unauthenticated — a fresh client, because the shared `client` fixture is
+    # logged in by `admin_client` (it reuses the same TestClient instance)
+    with TestClient(app) as anon:
+        assert anon.get("/api/admin/backups").status_code == 401
+        assert anon.post("/api/admin/backups", json={}).status_code == 401
 
     # a regular (non-admin) user
     r = admin_client.post("/api/admin/users", json={
@@ -162,10 +169,6 @@ def test_non_admin_forbidden(client, admin_client):
         "full_name": "Bob", "role": "user",
     })
     assert r.status_code == 200, r.text
-
-    from fastapi.testclient import TestClient
-
-    from main import app
 
     with TestClient(app) as bob:
         login = bob.post("/api/auth/login", json={"username": "lifecycle-bob", "password": "bobpass123"})
