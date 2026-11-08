@@ -30,6 +30,9 @@ from models import Backup
 log = logging.getLogger("nestbox.lifecycle")
 
 DUMP_TIMEOUT_SECONDS = 3600
+# Lock waits during restore/reset fail after this long instead of blocking
+# forever (a session can grab a lock after _terminate_other_sessions() runs).
+LOCK_TIMEOUT_SQL = "120s"
 
 
 class LifecycleError(Exception):
@@ -205,8 +208,12 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
         "-j", "2",
         str(path),
     ]
+    env = _pg_env()
+    # Fail fast on lock contention instead of blocking indefinitely: a
+    # session can acquire a lock after _terminate_other_sessions() ran.
+    env["PGOPTIONS"] = f"-c lock_timeout={LOCK_TIMEOUT_SQL}"
     try:
-        proc = subprocess.run(cmd, env=_pg_env(), capture_output=True, text=True, timeout=DUMP_TIMEOUT_SECONDS)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=DUMP_TIMEOUT_SECONDS)
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         raise LifecycleError(f"pg_restore failed to run: {exc}") from exc
     if proc.returncode != 0 and "ERROR" in (proc.stderr or ""):
@@ -247,6 +254,10 @@ def reset_database(db: Session, actor_username: str = "system") -> dict:
     raw = engine.raw_connection()
     try:
         cur = raw.cursor()
+        # Fail fast if a session grabs a lock after the terminate above,
+        # instead of blocking the DROP forever. Applies to this transaction
+        # (the whole drop + rebuild runs in one).
+        cur.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_SQL}'")
         cur.execute("DROP SCHEMA public CASCADE")
         cur.execute("CREATE SCHEMA public")
         db_init = Path(__file__).resolve().parents[2] / "db-init"
