@@ -33,10 +33,10 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt pytest httpx pytest-timeout
       # -v writes per-test progress to stderr (unbuffered in CI, so we see live
-      # progress instead of silent block-buffered stdout). --faulthandler-timeout
-      # dumps every thread's stack if anything blocks for 90s — that names the
-      # exact hanging call. --timeout fails the test itself at 180s.
-      - run: pytest backend -v --timeout=180 --faulthandler-timeout=90
+      # progress instead of silent block-buffered stdout). faulthandler_timeout
+      # (pytest.ini) dumps every thread's stack if anything blocks for 90s.
+      # --timeout fails the test itself at 180s.
+      - run: pytest backend -v --timeout=180
         env:
           DATABASE_URL: postgresql+psycopg2://nestbox:nestbox@localhost:5432/nestbox
 
