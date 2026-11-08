@@ -2,9 +2,10 @@
 
 Backups are `pg_dump -Fc` files written to NESTBOX_BACKUP_PATH (default
 /backups), each with a SHA-256 checksum recorded in the `backups` table.
-Restore verifies the checksum before running `pg_restore --clean`. A full
-reset takes a pre-reset backup, then drops and rebuilds the public schema
-from db-init/ — the install returns to first-boot state.
+Restore verifies the checksum, drops and recreates the public schema, then
+runs pg_restore into the empty schema. A full reset takes a pre-reset backup,
+then drops and rebuilds the public schema from db-init/ — the install returns
+to first-boot state.
 
 The `backups` table is deliberately outside the trigger-based audit loop
 (retention pruning deletes rows), so every lifecycle action here writes an
@@ -172,10 +173,10 @@ def verify_backup(backup: Backup) -> None:
 
 
 def _terminate_other_sessions() -> None:
-    """End every other session on this database so pg_restore can drop objects.
+    """End every other session on this database so schema operations can proceed.
 
-    Admin-initiated restores are expected to interrupt in-flight work; the
-    engine's pool reconnects lazily (pool_pre_ping) after the restore.
+    Admin-initiated restores/resets are expected to interrupt in-flight work;
+    the engine's pool reconnects lazily (pool_pre_ping) afterwards.
     """
     from database import engine
 
@@ -188,41 +189,66 @@ def _terminate_other_sessions() -> None:
             conn.execute(text("SELECT pg_terminate_backend(:p)"), {"p": pid})
 
 
+def _drop_and_recreate_schema() -> None:
+    """Drop and recreate the public schema on a dedicated raw connection.
+
+    Uses SET LOCAL lock_timeout so that if a session grabs a lock after
+    _terminate_other_sessions() ran, we fail fast instead of hanging.
+    The raw connection is separate from the engine pool so it isn't affected
+    by the terminate (and won't poison pooled connections).
+    """
+    from database import engine
+
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        cur.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_SQL}'")
+        cur.execute("DROP SCHEMA public CASCADE")
+        cur.execute("CREATE SCHEMA public")
+        # Restore default privileges that Postgres sets up for new schemas.
+        cur.execute("GRANT ALL ON SCHEMA public TO PUBLIC")
+        raw.commit()
+    finally:
+        raw.close()
+
+
 def restore_backup(db: Session, backup_id: int, actor_username: str = "system") -> dict:
     """Restore a verified backup over the current database.
 
     Sequence: verify checksum → release our own transaction → terminate other
-    sessions → pg_restore --clean → write an audit row on the restored schema
-    (in a fresh session; the caller's session is stale after the restore).
+    sessions → DROP SCHEMA public + recreate → pg_restore into empty schema →
+    write an audit row on the restored schema (in a fresh session; the caller's
+    session is stale after the restore).
 
-    Note: parallel restore (-j) is deliberately avoided. With --clean,
-    parallel workers can deadlock on inter-object dependencies (triggers,
-    FKs) in ways that Postgres's deadlock detector doesn't catch, causing
-    indefinite hangs. Sequential restore is fast enough for the small
-    databases this app targets.
+    We drop and recreate the schema ourselves rather than relying on
+    pg_restore --clean. The --clean flag issues individual DROP commands for
+    each object (tables, indexes, triggers, FKs) which can deadlock on
+    inter-object dependencies in ways that are hard to diagnose. Dropping the
+    entire schema in one atomic DDL statement avoids all of that — it's the
+    same approach reset_database uses and is proven to work in CI.
     """
     backup = get_backup(db, backup_id)
     if backup is None:
         raise LookupError(f"Backup {backup_id} not found")
     verify_backup(backup)
 
-    # Release any locks our transaction holds before pg_restore drops objects.
+    # Release any locks our transaction holds before the schema drop.
     db.rollback()
     _terminate_other_sessions()
+    _drop_and_recreate_schema()
 
     params = _db_params()
     path = backup_dir() / backup.filename
+    # No --clean: the schema is already empty, so pg_restore just creates
+    # everything fresh. This avoids any lock contention during restore.
     cmd = [
         "pg_restore",
         "-h", params["host"], "-p", params["port"],
         "-U", params["user"], "-d", params["dbname"],
-        "--clean", "--if-exists", "--no-owner",
+        "--no-owner",
         str(path),
     ]
     env = _pg_env()
-    # Fail fast on lock contention instead of blocking indefinitely: a
-    # session can acquire a lock after _terminate_other_sessions() ran.
-    env["PGOPTIONS"] = f"-c lock_timeout={LOCK_TIMEOUT_SQL}"
     try:
         proc = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
@@ -230,13 +256,13 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         raise LifecycleError(f"pg_restore failed to run: {exc}") from exc
-    if proc.returncode != 0 and "ERROR" in (proc.stderr or ""):
-        # pg_restore returns non-zero when it hits errors; --clean against a
-        # live schema can report harmless 'does not exist' noise, so only fail
-        # on real failures — but never stay silent about them.
-        tail = [l for l in (proc.stderr or "").strip().splitlines() if "does not exist" not in l][-5:]
-        if tail:
-            raise LifecycleError("pg_restore failed: " + " | ".join(tail))
+    if proc.returncode != 0:
+        # pg_restore can return non-zero for warnings; check if it's a real
+        # failure by looking for ERROR lines (not just NOTICE/WARNING).
+        stderr_lines = (proc.stderr or "").strip().splitlines()
+        error_lines = [l for l in stderr_lines if "ERROR" in l][-5:]
+        if error_lines:
+            raise LifecycleError("pg_restore failed: " + " | ".join(error_lines))
 
     # The caller's session is stale (its tables were dropped/recreated); audit
     # on a fresh one so the record survives even though the old log was wiped.
