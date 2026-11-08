@@ -215,10 +215,10 @@ def _drop_and_recreate_schema() -> None:
 def restore_backup(db: Session, backup_id: int, actor_username: str = "system") -> dict:
     """Restore a verified backup over the current database.
 
-    Sequence: verify checksum → release our own transaction → terminate other
-    sessions → DROP SCHEMA public + recreate → pg_restore into empty schema →
-    write an audit row on the restored schema (in a fresh session; the caller's
-    session is stale after the restore).
+    Sequence: verify checksum → extract file metadata → release our own
+    transaction → terminate other sessions → DROP SCHEMA public + recreate →
+    pg_restore into empty schema → write an audit row on the restored schema
+    (in a fresh session; the caller's session is stale after the restore).
 
     We drop and recreate the schema ourselves rather than relying on
     pg_restore --clean. The --clean flag issues individual DROP commands for
@@ -230,6 +230,15 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     backup = get_backup(db, backup_id)
     if backup is None:
         raise LookupError(f"Backup {backup_id} not found")
+
+    # Extract all data we need from the ORM object NOW. After db.rollback()
+    # below, the instance's attributes are expired and the backups table will
+    # no longer exist once we drop the schema — any later attribute access
+    # would trigger a lazy-load against a missing table.
+    backup_id_val = backup.id
+    backup_filename = backup.filename
+    backup_sha256 = backup.sha256
+
     verify_backup(backup)
 
     # Release any locks our transaction holds before the schema drop.
@@ -238,7 +247,7 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     _drop_and_recreate_schema()
 
     params = _db_params()
-    path = backup_dir() / backup.filename
+    path = backup_dir() / backup_filename
     # No --clean: the schema is already empty, so pg_restore just creates
     # everything fresh. This avoids any lock contention during restore.
     cmd = [
@@ -269,12 +278,12 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     from database import SessionLocal
 
     with SessionLocal() as fresh:
-        _audit(fresh, actor_username, "UPDATE", backup.id, {
-            "op": "restore", "filename": backup.filename, "sha256": backup.sha256,
+        _audit(fresh, actor_username, "UPDATE", backup_id_val, {
+            "op": "restore", "filename": backup_filename, "sha256": backup_sha256,
         })
         fresh.commit()
-    log.warning("Database restored from %s by %s", backup.filename, backup.sha256)
-    return {"restored_from": backup.filename, "sha256": backup.sha256}
+    log.warning("Database restored from %s by %s", backup_filename, backup_sha256)
+    return {"restored_from": backup_filename, "sha256": backup_sha256}
 
 
 def reset_database(db: Session, actor_username: str = "system") -> dict:
