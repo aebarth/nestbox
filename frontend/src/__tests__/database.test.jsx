@@ -71,7 +71,8 @@ describe('Database', () => {
     renderPage()
     await screen.findByText(BACKUP.filename)
 
-    await user.click(screen.getByText('Restore'))
+    // role query: the table header also contains the text "Restore"
+    await user.click(screen.getByRole('button', { name: 'Restore' }))
     const input = screen.getByPlaceholderText('type RESTORE')
     const confirm = screen.getByRole('button', { name: /confirm/i })
 
