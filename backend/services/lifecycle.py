@@ -192,9 +192,8 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     """Restore a verified backup over the current database.
 
     Sequence: verify checksum → release our own transaction → terminate other
-    sessions → pg_restore --clean --single-transaction → write an audit row
-    on the restored schema (in a fresh session; the caller's session is stale
-    after the restore).
+    sessions → pg_restore --clean → write an audit row on the restored schema
+    (in a fresh session; the caller's session is stale after the restore).
 
     Note: parallel restore (-j) is deliberately avoided. With --clean,
     parallel workers can deadlock on inter-object dependencies (triggers,
@@ -218,7 +217,6 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
         "-h", params["host"], "-p", params["port"],
         "-U", params["user"], "-d", params["dbname"],
         "--clean", "--if-exists", "--no-owner",
-        "--single-transaction",
         str(path),
     ]
     env = _pg_env()
