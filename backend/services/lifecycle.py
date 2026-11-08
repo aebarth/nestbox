@@ -29,7 +29,10 @@ from models import Backup
 
 log = logging.getLogger("nestbox.lifecycle")
 
-DUMP_TIMEOUT_SECONDS = 3600
+# Subprocess timeout for pg_dump / pg_restore. 120 s is generous for the
+# small databases this app targets; if a restore truly hangs (lock, I/O)
+# we want a fast, clear failure rather than a multi-hour CI stall.
+DUMP_TIMEOUT_SECONDS = 120
 # Lock waits during restore/reset fail after this long instead of blocking
 # forever (a session can grab a lock after _terminate_other_sessions() runs).
 LOCK_TIMEOUT_SQL = "120s"
@@ -121,7 +124,10 @@ def create_backup(
         "-Fc", "-f", str(path),
     ]
     try:
-        proc = subprocess.run(cmd, env=_pg_env(), capture_output=True, text=True, timeout=DUMP_TIMEOUT_SECONDS)
+        proc = subprocess.run(
+            cmd, env=_pg_env(), capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=DUMP_TIMEOUT_SECONDS,
+        )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         path.unlink(missing_ok=True)
         raise LifecycleError(f"pg_dump failed to run: {exc}") from exc
@@ -186,8 +192,15 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     """Restore a verified backup over the current database.
 
     Sequence: verify checksum → release our own transaction → terminate other
-    sessions → pg_restore --clean → write an audit row on the restored schema
-    (in a fresh session; the caller's session is stale after the restore).
+    sessions → pg_restore --clean --single-transaction → write an audit row
+    on the restored schema (in a fresh session; the caller's session is stale
+    after the restore).
+
+    Note: parallel restore (-j) is deliberately avoided. With --clean,
+    parallel workers can deadlock on inter-object dependencies (triggers,
+    FKs) in ways that Postgres's deadlock detector doesn't catch, causing
+    indefinite hangs. Sequential restore is fast enough for the small
+    databases this app targets.
     """
     backup = get_backup(db, backup_id)
     if backup is None:
@@ -205,7 +218,7 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
         "-h", params["host"], "-p", params["port"],
         "-U", params["user"], "-d", params["dbname"],
         "--clean", "--if-exists", "--no-owner",
-        "-j", "2",
+        "--single-transaction",
         str(path),
     ]
     env = _pg_env()
@@ -213,7 +226,10 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     # session can acquire a lock after _terminate_other_sessions() ran.
     env["PGOPTIONS"] = f"-c lock_timeout={LOCK_TIMEOUT_SQL}"
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=DUMP_TIMEOUT_SECONDS)
+        proc = subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=DUMP_TIMEOUT_SECONDS,
+        )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         raise LifecycleError(f"pg_restore failed to run: {exc}") from exc
     if proc.returncode != 0 and "ERROR" in (proc.stderr or ""):
