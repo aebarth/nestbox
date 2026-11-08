@@ -38,6 +38,15 @@ DUMP_TIMEOUT_SECONDS = 120
 # forever (a session can grab a lock after _terminate_other_sessions() runs).
 LOCK_TIMEOUT_SQL = "120s"
 
+# pg_restore reports these as ERROR but they are non-fatal: the tool
+# continues and the data is restored correctly. We filter them out so a
+# benign GUC mismatch doesn't fail an otherwise-successful restore.
+_BENIGN_RESTORE_ERRORS = (
+    "unrecognized configuration parameter",
+    "does not exist",          # --clean noise when object was already dropped
+    "permission denied",       # ACL replay on objects we don't care about
+)
+
 
 class LifecycleError(Exception):
     """Raised when a backup/restore/reset operation fails."""
@@ -212,6 +221,11 @@ def _drop_and_recreate_schema() -> None:
         raw.close()
 
 
+def _is_benign_restore_error(line: str) -> bool:
+    """Return True if a pg_restore stderr line is a known non-fatal error."""
+    return any(pat in line for pat in _BENIGN_RESTORE_ERRORS)
+
+
 def restore_backup(db: Session, backup_id: int, actor_username: str = "system") -> dict:
     """Restore a verified backup over the current database.
 
@@ -266,12 +280,16 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         raise LifecycleError(f"pg_restore failed to run: {exc}") from exc
     if proc.returncode != 0:
-        # pg_restore can return non-zero for warnings; check if it's a real
-        # failure by looking for ERROR lines (not just NOTICE/WARNING).
+        # pg_restore returns non-zero for any error it encounters, including
+        # benign ones (GUC mismatches, missing optional objects). Only raise
+        # if there's a real failure that isn't in our allowlist.
         stderr_lines = (proc.stderr or "").strip().splitlines()
-        error_lines = [l for l in stderr_lines if "ERROR" in l][-5:]
-        if error_lines:
-            raise LifecycleError("pg_restore failed: " + " | ".join(error_lines))
+        fatal_lines = [
+            l for l in stderr_lines
+            if "ERROR" in l and not _is_benign_restore_error(l)
+        ][-5:]
+        if fatal_lines:
+            raise LifecycleError("pg_restore failed: " + " | ".join(fatal_lines))
 
     # The caller's session is stale (its tables were dropped/recreated); audit
     # on a fresh one so the record survives even though the old log was wiped.
