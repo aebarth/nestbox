@@ -10,7 +10,7 @@ import re
 import schemas
 from database import get_db
 from models import Box, FileEvent, Project, Record, RecordType, User
-from security import get_current_user, require_admin
+from security import get_current_user, require_org_admin
 from services.scanner import add_event
 
 router = APIRouter(prefix="/api/records", tags=["records"])
@@ -56,6 +56,7 @@ def search(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # RLS scopes every filter to the caller's org (context set by get_current_user)
     query = select(Record).options(*RECORD_OPTS)
     count_q = select(func.count()).select_from(Record)
 
@@ -205,6 +206,8 @@ def categorize(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # RLS: records from other orgs are invisible → 404; the UPDATE's WITH
+    # CHECK passes because org_id is unchanged and matches the session GUC.
     r = db.execute(
         select(Record).options(*RECORD_OPTS).where(Record.id == record_id)
     ).unique().scalar_one_or_none()
@@ -236,7 +239,8 @@ def categorize(
             changes["tags"] = {"from": r.tags, "to": new}
             r.tags = new
 
-    # Nullable FK fields: explicit null -> clear.
+    # Nullable FK fields: explicit null -> clear. Referenced rows (project,
+    # record type) must live in the same org — RLS makes cross-org ids 404/None.
     for field in ("project_id", "record_type_id"):
         if field not in provided:
             continue
@@ -283,8 +287,9 @@ def change_status(
     record_id: int,
     body: schemas.RecordStatusIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_admin),  # lifecycle changes are admin-only
+    auth: tuple = Depends(require_org_admin),  # lifecycle changes are org-admin-only
 ):
+    user, _org_id, _role = auth
     r = db.execute(
         select(Record).options(*RECORD_OPTS).where(Record.id == record_id)
     ).unique().scalar_one_or_none()
