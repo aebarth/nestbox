@@ -17,6 +17,15 @@ def list_projects(db: Session = Depends(get_db), _auth: tuple = Depends(get_curr
     return db.execute(select(Project).order_by(Project.code)).scalars().all()
 
 
+@router.get("/projects/{project_id}", response_model=schemas.ProjectOut)
+def get_project(project_id: int, db: Session = Depends(get_db), _auth: tuple = Depends(get_current_user_with_org)):
+    # RLS: projects from other orgs are invisible → 404
+    p = db.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return p
+
+
 @router.post("/projects", response_model=schemas.ProjectOut)
 def create_project(body: schemas.LookupIn, db: Session = Depends(get_db),
                    auth: tuple = Depends(require_org_admin)):
@@ -47,6 +56,15 @@ def update_project(project_id: int, body: schemas.LookupIn, db: Session = Depend
 def list_record_types(db: Session = Depends(get_db), _auth: tuple = Depends(get_current_user_with_org)):
     # RLS scopes to the caller's org; pending tokens rejected with 403.
     return db.execute(select(RecordType).order_by(RecordType.code)).scalars().all()
+
+
+@router.get("/record-types/{type_id}", response_model=schemas.RecordTypeOut)
+def get_record_type(type_id: int, db: Session = Depends(get_db), _auth: tuple = Depends(get_current_user_with_org)):
+    # RLS: record types from other orgs are invisible → 404
+    rt = db.get(RecordType, type_id)
+    if rt is None:
+        raise HTTPException(status_code=404, detail="Record type not found")
+    return rt
 
 
 @router.post("/record-types", response_model=schemas.RecordTypeOut)
