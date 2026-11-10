@@ -24,6 +24,7 @@ if SECRET_KEY in ("dev-only-insecure", "change-me") or len(SECRET_KEY) < 16:
         "depend on it."
     )
 TOKEN_TTL_HOURS = 12
+PENDING_TOKEN_TTL_MINUTES = 5
 COOKIE_NAME = "nestbox_token"
 COOKIE_SECURE = os.environ.get("APP_BASE_URL", "").startswith("https")
 
@@ -97,6 +98,27 @@ def issue_token(response: Response, username: str, org_id: int | None = None, or
         samesite="lax",
         secure=COOKIE_SECURE,
         max_age=TOKEN_TTL_HOURS * 3600,
+    )
+
+
+def issue_pending_token(response: Response, username: str) -> None:
+    """Short-lived token issued after a multi-org login, before an org is
+    selected. Carries only `sub` + a `pending` flag; the sole consumer is
+    /api/auth/select-org, which exchanges it for a full org-scoped token.
+    Org-scoped endpoints reject it (no org_id claim → 403)."""
+    claims = {
+        "sub": username,
+        "pending": True,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=PENDING_TOKEN_TTL_MINUTES),
+    }
+    token = jwt.encode(claims, SECRET_KEY, algorithm="HS256")
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        max_age=PENDING_TOKEN_TTL_MINUTES * 60,
     )
 
 
