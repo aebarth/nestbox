@@ -5,6 +5,11 @@ Identity rules:
   * local files: identified by path; a disappeared path and a new path with
     the same (hash, size) are correlated into a single moved/renamed event so
     categorization, box assignment and history follow the file.
+
+Multi-org (v5): every row written here carries an explicit org_id derived
+from its parent (record → source). The worker connects as nestbox_admin
+(BYPASSRLS), so RLS does not filter these writes — the org_id columns and
+the per-org duplicate-grouping below are what keep orgs isolated.
 """
 import logging
 import os
@@ -76,6 +81,7 @@ def add_event(
     alert: bool = True,
 ) -> FileEvent:
     ev = FileEvent(
+        org_id=record.org_id,
         record_id=record.id,
         scan_run_id=run.id if run else None,
         event_type=event_type,
@@ -87,6 +93,7 @@ def add_event(
     if alert and event_type in ALERT_SEVERITY:
         db.add(
             Alert(
+                org_id=record.org_id,
                 file_event_id=ev.id,
                 record_id=record.id,
                 alert_type=event_type,
@@ -238,6 +245,7 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
 
     for f, algo, value in unmatched_new:
         record = Record(
+            org_id=source.org_id,
             source_id=source.id,
             external_id=f.external_id,
             path=f.path,
@@ -285,7 +293,12 @@ def scan_source(db: Session, source: Source, run: ScanRun) -> dict:
 
 def detect_duplicates(db: Session) -> int:
     """Group live records with identical content (per hash algo), plus a
-    name+size fallback for records whose hashes aren't comparable."""
+    name+size fallback for records whose hashes aren't comparable.
+
+    Grouping is per-org: the worker sees every org (BYPASSRLS), so org_id is
+    part of the group key — otherwise two orgs scanning the same document
+    would be merged into one duplicate group and cross the isolation line.
+    """
     live = db.execute(
         select(Record)
         .options(*_DEFERRED_TEXT)
@@ -297,21 +310,21 @@ def detect_duplicates(db: Session) -> int:
     groups: dict[tuple, list[Record]] = {}
     for r in live:
         if r.hash_value:
-            groups.setdefault(("hash", r.hash_algo, r.hash_value, r.size_bytes), []).append(r)
+            groups.setdefault((r.org_id, "hash", r.hash_algo, r.hash_value, r.size_bytes), []).append(r)
     hashed_ids = set()
     for key, members in groups.items():
         if len(members) > 1:
             hashed_ids.update(m.id for m in members)
     for r in live:
         if r.id not in hashed_ids:
-            groups.setdefault(("name_size", r.name.lower(), r.size_bytes), []).append(r)
+            groups.setdefault((r.org_id, "name_size", r.name.lower(), r.size_bytes), []).append(r)
 
     new_groups = 0
     for key, members in groups.items():
         if len(members) < 2:
             continue
         # cross-algo name_size buckets containing already-hash-grouped files are noise
-        if key[0] == "name_size" and all(m.id in hashed_ids for m in members):
+        if key[1] == "name_size" and all(m.id in hashed_ids for m in members):
             continue
         existing_group_ids = {m.duplicate_group_id for m in members if m.duplicate_group_id}
         if existing_group_ids:
@@ -320,18 +333,19 @@ def detect_duplicates(db: Session) -> int:
             if group.is_dismissed:
                 continue
         else:
-            group = DuplicateGroup(match_kind="hash" if key[0] == "hash" else "name_size")
+            group = DuplicateGroup(org_id=key[0], match_kind="hash" if key[1] == "hash" else "name_size")
             db.add(group)
             db.flush()
             gid = group.id
             new_groups += 1
             db.add(
                 Alert(
+                    org_id=members[0].org_id,
                     record_id=members[0].id,
                     alert_type="duplicate",
                     severity="warning",
                     notes=f"{len(members)} files share the same "
-                          f"{'content' if key[0] == 'hash' else 'name and size'}.",
+                          f"{'content' if key[1] == 'hash' else 'name and size'}.",
                 )
             )
         for m in members:
