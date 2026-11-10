@@ -105,7 +105,7 @@ def test_database_enforces_isolation(db_session, org_b):
 
     # org B's context sees its row but not org A's
     set_org_context(db_session, "pytest", 1, org_b)
-    visible = {r.code for r in db_session.execute(text("SELECT code FROM projects")).scalars()}
+    visible = set(db_session.execute(text("SELECT code FROM projects")).scalars())
     assert "DB-B" in visible and "DB-A" not in visible
 
     # WITH CHECK: an INSERT claiming org A while the session is scoped to B
