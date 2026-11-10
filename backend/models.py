@@ -21,6 +21,10 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
 
 
+# ============================================================================
+# Global (install-level) models — NOT org-scoped
+# ============================================================================
+
 class User(Base, TimestampMixin):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -39,10 +43,43 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
 
 
+# ============================================================================
+# Organization models
+# ============================================================================
+
+class Organization(Base, TimestampMixin):
+    __tablename__ = "organizations"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text, unique=True)
+    kind: Mapped[str] = mapped_column(Text, default="personal")  # 'personal' | 'business'
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class OrgMember(Base):
+    __tablename__ = "org_members"
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    org_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(Text, default="member")  # 'owner' | 'admin' | 'member'
+
+
+class OrgSetting(Base):
+    __tablename__ = "org_settings"
+    org_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[dict | list | str | int | None] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+# ============================================================================
+# Org-scoped data models (all have org_id, RLS-filtered at the DB level)
+# ============================================================================
+
 class Source(Base, TimestampMixin):
     __tablename__ = "sources"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    name: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
+    name: Mapped[str] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(Text)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
     credentials_enc: Mapped[bytes | None] = mapped_column(BYTEA)
@@ -55,7 +92,8 @@ class Source(Base, TimestampMixin):
 class Project(Base, TimestampMixin):
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    code: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
+    code: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -63,7 +101,8 @@ class Project(Base, TimestampMixin):
 class RecordType(Base, TimestampMixin):
     __tablename__ = "record_types"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    code: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
+    code: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     retention_years: Mapped[int | None] = mapped_column(BigInteger)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -72,7 +111,8 @@ class RecordType(Base, TimestampMixin):
 class Box(Base, TimestampMixin):
     __tablename__ = "boxes"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    box_number: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
+    box_number: Mapped[str] = mapped_column(Text)
     physical_location: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(Text, default="open")
@@ -82,6 +122,7 @@ class Box(Base, TimestampMixin):
 class DuplicateGroup(Base, TimestampMixin):
     __tablename__ = "duplicate_groups"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     match_kind: Mapped[str] = mapped_column(Text)
     is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
     dismissed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
@@ -91,6 +132,7 @@ class DuplicateGroup(Base, TimestampMixin):
 class Record(Base, TimestampMixin):
     __tablename__ = "records"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     uuid: Mapped[str] = mapped_column(UUID(as_uuid=False), server_default="gen_random_uuid()")
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
     external_id: Mapped[str | None] = mapped_column(Text)
@@ -110,7 +152,7 @@ class Record(Base, TimestampMixin):
     notes: Mapped[str] = mapped_column(Text, default="")
     box_id: Mapped[int | None] = mapped_column(ForeignKey("boxes.id"))
     filed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(Text, default="active")
+    status: Mapped[str] = mapped_column(Text, default="inbox")
     superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("records.id"))
     retention_until: Mapped[date | None] = mapped_column(Date)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -137,6 +179,7 @@ class Record(Base, TimestampMixin):
 class FolderRule(Base, TimestampMixin):
     __tablename__ = "folder_rules"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
     folder_prefix: Mapped[str] = mapped_column(Text, default="")
     record_type_id: Mapped[int | None] = mapped_column(ForeignKey("record_types.id"))
@@ -147,6 +190,7 @@ class FolderRule(Base, TimestampMixin):
 class ScanRun(Base):
     __tablename__ = "scan_runs"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"))
     kind: Mapped[str] = mapped_column(Text, default="scan")
     trigger: Mapped[str] = mapped_column(Text, default="manual")
@@ -163,6 +207,7 @@ class ScanRun(Base):
 class FileEvent(Base):
     __tablename__ = "file_events"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     record_id: Mapped[int] = mapped_column(ForeignKey("records.id"))
     scan_run_id: Mapped[int | None] = mapped_column(ForeignKey("scan_runs.id"))
     event_type: Mapped[str] = mapped_column(Text)
@@ -174,6 +219,7 @@ class FileEvent(Base):
 class Alert(Base, TimestampMixin):
     __tablename__ = "alerts"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"))
     file_event_id: Mapped[int | None] = mapped_column(ForeignKey("file_events.id"))
     record_id: Mapped[int] = mapped_column(ForeignKey("records.id"))
     alert_type: Mapped[str] = mapped_column(Text)
@@ -187,11 +233,16 @@ class Alert(Base, TimestampMixin):
     record: Mapped[Record] = relationship()
 
 
+# ============================================================================
+# Install-level models (NOT org-scoped)
+# ============================================================================
+
 class Backup(Base):
     """A pg_dump backup of the nestbox database (Phase 2.1, #9).
 
     Not covered by the trigger-based audit loop (retention pruning deletes
     rows); services/lifecycle.py writes explicit audit_log entries instead.
+    Install-level: backups are full-DB, not org-scoped.
     """
     __tablename__ = "backups"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -215,3 +266,4 @@ class AuditLog(Base):
     old_row: Mapped[dict | None] = mapped_column(JSONB)
     new_row: Mapped[dict | None] = mapped_column(JSONB)
     changed_cols: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    org_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"))  # NULL = install-level
