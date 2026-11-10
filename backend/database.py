@@ -12,8 +12,17 @@ WORKER_DB_URL = os.environ.get(
     "WORKER_DB_URL", "postgresql+psycopg2://nestbox_admin:nestbox_admin@localhost:5432/nestbox"
 )
 
+# Schema management (first-boot bootstrap + migrations) must run as the table
+# OWNER role: nestbox_app / nestbox_admin hold DML grants only and cannot
+# CREATE/ALTER tables, create roles, or manage policies. In default installs
+# that owner is the Postgres superuser 'nestbox'.
+SCHEMA_DB_URL = os.environ.get(
+    "SCHEMA_DB_URL", "postgresql+psycopg2://nestbox:nestbox@localhost:5432/nestbox"
+)
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 worker_engine = create_engine(WORKER_DB_URL, pool_pre_ping=True)
+schema_engine = create_engine(SCHEMA_DB_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 WorkerSessionLocal = sessionmaker(bind=worker_engine, autoflush=False, expire_on_commit=False)
 
@@ -56,7 +65,7 @@ def bootstrap_schema_if_empty() -> None:
     db-init folder isn't mounted into Postgres): apply db-init/*.sql ourselves."""
     from pathlib import Path
 
-    with engine.connect() as conn:
+    with schema_engine.connect() as conn:
         exists = conn.execute(text(
             "SELECT 1 FROM information_schema.tables "
             "WHERE table_schema='public' AND table_name='schema_version'"
@@ -66,7 +75,7 @@ def bootstrap_schema_if_empty() -> None:
     db_init = Path(__file__).parent / "db-init"
     if not db_init.is_dir():
         db_init = Path(__file__).parent.parent / "db-init"
-    raw = engine.raw_connection()
+    raw = schema_engine.raw_connection()
     try:
         cur = raw.cursor()
         for sql_file in sorted(db_init.glob("*.sql")):
@@ -77,7 +86,7 @@ def bootstrap_schema_if_empty() -> None:
 
 
 # Stable id for the first-boot advisory lock. Any fixed integer works; it only
-# needs to be consistent across processes so the API and worker serialize.
+# needs to be consistent across processes so the API and the worker serialize.
 _SCHEMA_LOCK_KEY = 730142
 
 
@@ -90,11 +99,14 @@ def apply_migrations() -> None:
     then sees the schema already present and no-ops. The lock is held on its own
     connection for the duration; bootstrap/migrations use separate pooled
     connections (default pool size 5 leaves headroom).
+
+    Runs as the table-owner role (SCHEMA_DB_URL): migrations do DDL, create
+    roles, and manage RLS policies — none of which nestbox_app may do.
     """
     import re
     from pathlib import Path
 
-    with engine.connect() as conn:
+    with schema_engine.connect() as conn:
         conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _SCHEMA_LOCK_KEY})
         try:
             bootstrap_schema_if_empty()
@@ -102,7 +114,7 @@ def apply_migrations() -> None:
             files = sorted(p for p in mig_dir.glob("*.sql"))
             if not files:
                 return
-            with engine.begin() as mconn:
+            with schema_engine.begin() as mconn:
                 current = mconn.execute(text("SELECT max(version) FROM schema_version")).scalar() or 0
                 for path in files:
                     m = re.match(r"^(\d+)_", path.name)
