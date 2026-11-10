@@ -19,14 +19,12 @@ def test_login_lockout_after_failures(admin_client, db_session):
 
 
 def test_record_lifecycle_is_admin_only(admin_client, org_db, default_org_id):
-    from models import Record
+    from models import Record, Source
     from sqlalchemy import select
 
-    source = org_db.execute(select(Source)).scalars().first() if False else None
-    # (kept simple: the setup-created Scan Inbox source is guaranteed to exist)
-    from models import Source as _Source
-
-    source = org_db.execute(select(_Source)).scalars().first()
+    # the setup-created Scan Inbox source is guaranteed to exist in the
+    # default org (visible here via RLS)
+    source = org_db.execute(select(Source)).scalars().first()
     rec = Record(org_id=default_org_id, source_id=source.id, path="sec-test.pdf",
                  name="sec-test.pdf", title="sec", status="active")
     org_db.add(rec)
