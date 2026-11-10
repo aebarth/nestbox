@@ -40,24 +40,28 @@ def get_db():
 
 
 def set_org_context(db: Session, username: str, user_id: int, org_id: int) -> None:
-    """Set the RLS org scope and audit actor for this transaction.
+    """Set the RLS org scope and audit actor for this session.
 
-    Must be called before any query that touches org-scoped tables.
-    SET LOCAL is transaction-scoped; sessions here use one transaction per
-    request, so this must be called at the start of the request handler.
+    Uses plain SET (session-scoped), NOT SET LOCAL: a request may commit
+    mid-flight (login, wizards, heartbeats) and then query again — with
+    SET LOCAL the GUCs would vanish at COMMIT and every post-commit RLS
+    query would fail closed. Session-scoped is safe because each request
+    owns one connection for its lifetime and the auth dependency always
+    re-sets these before any RLS access; a recycled pooled connection can
+    never reach an RLS table without going through that dependency first.
     """
-    db.execute(text("SET LOCAL app.username = :u"), {"u": username})
-    db.execute(text("SET LOCAL app.user_id = :uid"), {"uid": str(user_id)})
-    db.execute(text("SET LOCAL app.org_id = :oid"), {"oid": str(org_id)})
+    db.execute(text("SET app.username = :u"), {"u": username})
+    db.execute(text("SET app.user_id = :uid"), {"uid": str(user_id)})
+    db.execute(text("SET app.org_id = :oid"), {"oid": str(org_id)})
 
 
 def set_actor(db: Session, username: str) -> None:
-    """Legacy: set only the audit actor (no org context).
+    """Set only the audit actor (no org context).
 
     Used by install-level operations (lifecycle, setup) that don't have
-    an org scope. Kept for backward compatibility during the transition.
+    an org scope. Session-scoped for the same reason as set_org_context.
     """
-    db.execute(text("SET LOCAL app.username = :u"), {"u": username})
+    db.execute(text("SET app.username = :u"), {"u": username})
 
 
 def bootstrap_schema_if_empty() -> None:
