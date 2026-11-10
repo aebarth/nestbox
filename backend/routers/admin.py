@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import schemas
 from database import get_db
-from models import AuditLog, Backup, Setting, User
+from models import AuditLog, Backup, Organization, OrgMember, Setting, User
 from security import hash_password, require_admin
 from services import lifecycle
 from services.lifecycle import LifecycleError
@@ -18,16 +18,30 @@ SECRET_SETTINGS = {"google_client_secret_enc", "graph_client_secret_enc"}
 
 @router.get("/users", response_model=list[schemas.UserOut])
 def list_users(db: Session = Depends(get_db)):
+    # users is install-level (not RLS): admins see every account
     return db.execute(select(User).order_by(User.username)).scalars().all()
 
 
+class UserCreateIn(schemas.UserCreateIn):
+    """Extends the base schema with optional org assignment.
+
+    Since schema v5 a user with no org membership cannot log in, so new
+    accounts should normally be created into an org. org_id is optional to
+    keep existing callers working; when given, an org_members row is created.
+    """
+    org_id: int | None = None
+    org_role: str = Field(default="member", pattern="^(owner|admin|member)$")
+
+
 @router.post("/users", response_model=schemas.UserOut)
-def create_user(body: schemas.UserCreateIn, db: Session = Depends(get_db)):
+def create_user(body: UserCreateIn, db: Session = Depends(get_db)):
     if body.role not in ("admin", "user"):
         raise HTTPException(status_code=422, detail="Role must be admin or user")
     exists = db.execute(select(User).where(User.username == body.username)).scalar_one_or_none()
     if exists:
         raise HTTPException(status_code=409, detail="Username already exists")
+    if body.org_id is not None and db.get(Organization, body.org_id) is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
     user = User(
         username=body.username,
         password_hash=hash_password(body.password),
@@ -35,6 +49,9 @@ def create_user(body: schemas.UserCreateIn, db: Session = Depends(get_db)):
         role=body.role,
     )
     db.add(user)
+    db.flush()  # get user.id
+    if body.org_id is not None:
+        db.add(OrgMember(user_id=user.id, org_id=body.org_id, role=body.org_role))
     db.commit()
     return user
 
@@ -69,6 +86,7 @@ def update_user(
 
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db)):
+    # settings is install-level (not RLS); org-scoped keys live in org_settings
     rows = db.execute(select(Setting)).scalars().all()
     out = {}
     for row in rows:
@@ -101,6 +119,9 @@ def audit(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    # audit_log is RLS-scoped: an admin sees their org's rows plus
+    # install-level (org_id IS NULL) events. A full cross-org audit view
+    # needs a BYPASSRLS session — deferred to the org-admin UI work.
     q = select(AuditLog).order_by(AuditLog.at.desc()).limit(min(limit, 500)).offset(offset)
     if table:
         q = q.where(AuditLog.table_name == table)
@@ -150,6 +171,7 @@ def _backup_out(b: Backup) -> dict:
 
 @router.get("/backups")
 def list_backups(db: Session = Depends(get_db)):
+    # backups is install-level (not RLS): full-DB dumps span all orgs
     rows = db.execute(select(Backup).order_by(Backup.created_at.desc(), Backup.id.desc())).scalars().all()
     return [_backup_out(b) for b in rows]
 
