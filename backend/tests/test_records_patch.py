@@ -1,33 +1,37 @@
-"""PATCH /api/records/{id}: omitted fields are unchanged; explicit null/'' clears."""
+"""PATCH /api/records/{id}: omitted fields are unchanged; explicit null/'' clears.
+
+Multi-org (v5): the fixture runs inside the default org's RLS context and
+every row carries an explicit org_id — the session-scoped GUCs survive the
+commits, so fetch() re-reads see the rows.
+"""
 import uuid
 
 import pytest
-from sqlalchemy import select
 
 
 @pytest.fixture()
-def rec(db_session, admin_client):
-    from database import set_actor
+def rec(org_db, default_org_id, admin_client):
     from models import Box, Project, Record, RecordType, Source
 
     s = uuid.uuid4().hex[:8]
-    # One transaction (with the audit actor set) so every insert is attributed.
-    set_actor(db_session, "pytest")
-    source = Source(name=f"patch-{s}", kind="local", config={"root": "/tmp"})
-    proj = Project(code=f"PJ{s}", name="Proj")
-    rtype = RecordType(code=f"RT{s}", name="Type", retention_years=7)
-    box = Box(box_number=f"BX{s}", status="open")
-    db_session.add_all([source, proj, rtype, box])
-    db_session.flush()  # populate ids within this transaction
+    # One transaction (with RLS context set by org_db) so every insert is
+    # attributed and passes the policies' WITH CHECK.
+    source = Source(org_id=default_org_id, name=f"patch-{s}", kind="local", config={"root": "/tmp"})
+    proj = Project(org_id=default_org_id, code=f"PJ{s}", name="Proj")
+    rtype = RecordType(org_id=default_org_id, code=f"RT{s}", name="Type", retention_years=7)
+    box = Box(org_id=default_org_id, box_number=f"BX{s}", status="open")
+    org_db.add_all([source, proj, rtype, box])
+    org_db.flush()  # populate ids within this transaction
     record = Record(
+        org_id=default_org_id,
         source_id=source.id, path=f"p-{s}.pdf", name=f"p-{s}.pdf",
         title="Original Title", project_id=proj.id, record_type_id=rtype.id,
         lot_number="LOT1", part_number="PN1", tags=["a", "b"], notes="some notes",
         status="active",
     )
-    db_session.add(record)
-    db_session.commit()
-    return {"db": db_session, "client": admin_client, "id": record.id,
+    org_db.add(record)
+    org_db.commit()
+    return {"db": org_db, "client": admin_client, "id": record.id,
             "proj": proj.id, "rtype": rtype.id, "box": box.id}
 
 
