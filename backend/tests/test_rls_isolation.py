@@ -13,6 +13,8 @@ Org B is created directly via ORM: organizations/org_members are not RLS-
 restricted (they must be readable during auth), and org-management endpoints
 land in the follow-up PR.
 """
+import uuid
+
 import pytest
 
 
@@ -21,10 +23,8 @@ def org_b(db_session):
     """A second organization + its id, created outside RLS."""
     from models import Organization
 
-    org = Organization(name="Isolation Org B", slug=f"iso-b-{Organization.__name__}".lower(), kind="business")
-    # unique slug per run (DB is session-scoped; slugs are globally unique)
-    import uuid
-    org.slug = f"iso-b-{uuid.uuid4().hex[:8]}"
+    org = Organization(name="Isolation Org B", slug=f"iso-b-{uuid.uuid4().hex[:8]}",
+                       kind="business")
     db_session.add(org)
     db_session.commit()
     return org.id
@@ -38,14 +38,15 @@ def client_b(admin_client, org_b):
     from main import app
 
     r = admin_client.post("/api/admin/users", json={
-        "username": "orgb-admin", "password": "orgbpass123",
+        "username": f"orgb-{uuid.uuid4().hex[:6]}", "password": "orgbpass123",
         "full_name": "Org B Admin", "role": "user",
         "org_id": org_b, "org_role": "owner",
     })
     assert r.status_code == 200, r.text
+    username = r.json()["username"]
 
     with TestClient(app) as c:
-        login = c.post("/api/auth/login", json={"username": "orgb-admin", "password": "orgbpass123"})
+        login = c.post("/api/auth/login", json={"username": username, "password": "orgbpass123"})
         assert login.status_code == 200, login.text
         assert login.json()["needs_org_selection"] is False  # single org → auto-select
         yield c
@@ -88,17 +89,13 @@ def test_database_enforces_isolation(db_session, org_b):
     """Bypass the API entirely: raw nestbox_app session with org B's GUC."""
     from sqlalchemy import text
 
-    from database import set_org_context
-    from models import Organization
+    from database import schema_engine, set_org_context
 
     org_a = db_session.execute(text(
         "SELECT id FROM organizations ORDER BY created_at LIMIT 1"
     )).scalar_one()
 
-    # seed one project per org via the owner path (db-init grants; use raw SQL
-    # as the table owner would — simplest way to control both orgs here)
-    from database import schema_engine
-
+    # seed one project per org as the table owner
     with schema_engine.begin() as conn:
         for oid, code in ((org_a, "DB-A"), (org_b, "DB-B")):
             conn.execute(
@@ -106,8 +103,7 @@ def test_database_enforces_isolation(db_session, org_b):
                 {"o": oid, "c": code},
             )
 
-    # org B's context sees exactly one project row... but only if no other
-    # test rows exist; assert membership rather than exact count
+    # org B's context sees its row but not org A's
     set_org_context(db_session, "pytest", 1, org_b)
     visible = {r.code for r in db_session.execute(text("SELECT code FROM projects")).scalars()}
     assert "DB-B" in visible and "DB-A" not in visible
@@ -130,34 +126,36 @@ def test_database_enforces_isolation(db_session, org_b):
 def test_multi_org_login_and_select_org(admin_client, org_b):
     """A user in BOTH orgs: login returns the picker, select-org exchanges
     the pending token, and switching works from a full session."""
-    from fastapi.testclient import TestClient
+    import uuid as _uuid
 
+    from fastapi.testclient import TestClient
+    from sqlalchemy import text
+
+    from database import SessionLocal
     from main import app
 
+    username = f"dual-{_uuid.uuid4().hex[:6]}"
     r = admin_client.post("/api/admin/users", json={
-        "username": "dual-user", "password": "dualpass123",
+        "username": username, "password": "dualpass123",
         "full_name": "Dual", "role": "user",
         "org_id": org_b, "org_role": "member",
     })
     assert r.status_code == 200, r.text
-    # also add the membership in org A (default org)
-    from sqlalchemy import text
 
-    with admin_client:
-        pass
-    from database import SessionLocal
-
+    # also add the membership in org A (the first-created org)
     with SessionLocal() as s:
-        uid = s.execute(text("SELECT id FROM users WHERE username='dual-user'")).scalar_one()
-        org_a = s.execute(text("SELECT id FROM organizations ORDER BY created_at LIMIT 1")).scalar_one()
+        uid = s.execute(text("SELECT id FROM users WHERE username=:u"), {"u": username}).scalar_one()
+        org_a_id = s.execute(
+            text("SELECT id FROM organizations ORDER BY created_at LIMIT 1")
+        ).scalar_one()
         s.execute(
             text("INSERT INTO org_members (user_id, org_id, role) VALUES (:u, :o, 'member')"),
-            {"u": uid, "o": org_a},
+            {"u": uid, "o": org_a_id},
         )
         s.commit()
 
     with TestClient(app) as c:
-        login = c.post("/api/auth/login", json={"username": "dual-user", "password": "dualpass123"})
+        login = c.post("/api/auth/login", json={"username": username, "password": "dualpass123"})
         assert login.status_code == 200, login.text
         body = login.json()
         assert body["needs_org_selection"] is True
@@ -175,12 +173,6 @@ def test_multi_org_login_and_select_org(admin_client, org_b):
         assert "ONLY-B" in codes and "ONLY-A" not in codes
 
         # switch to org A from the full session
-        r = c.post("/api/auth/select-org", json={"org_id": None or 0}) if False else None
-        # (org A id looked up via API-visible data is not exposed; use DB)
-        from database import SessionLocal as SL
-
-        with SL() as s:
-            org_a_id = s.execute(text("SELECT id FROM organizations ORDER BY created_at LIMIT 1")).scalar_one()
         r = c.post("/api/auth/select-org", json={"org_id": org_a_id})
         assert r.status_code == 200, r.text
         codes = {p["code"] for p in c.get("/api/lookups/projects").json()}
