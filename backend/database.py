@@ -4,11 +4,18 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgresql+psycopg2://nestbox:nestbox@localhost:5432/nestbox"
+    "DATABASE_URL", "postgresql+psycopg2://nestbox_app:nestbox_app@localhost:5432/nestbox"
+)
+
+# Worker/admin operations use a BYPASSRLS role to work across orgs.
+WORKER_DB_URL = os.environ.get(
+    "WORKER_DB_URL", "postgresql+psycopg2://nestbox_admin:nestbox_admin@localhost:5432/nestbox"
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+worker_engine = create_engine(WORKER_DB_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+WorkerSessionLocal = sessionmaker(bind=worker_engine, autoflush=False, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):
@@ -23,12 +30,23 @@ def get_db():
         db.close()
 
 
-def set_actor(db: Session, username: str) -> None:
-    """Record who is acting so the audit_log trigger can attribute changes.
+def set_org_context(db: Session, username: str, user_id: int, org_id: int) -> None:
+    """Set the RLS org scope and audit actor for this transaction.
 
+    Must be called before any query that touches org-scoped tables.
     SET LOCAL is transaction-scoped; sessions here use one transaction per
-    request, so this must be called before any write and re-called after a
-    commit if further writes follow.
+    request, so this must be called at the start of the request handler.
+    """
+    db.execute(text("SET LOCAL app.username = :u"), {"u": username})
+    db.execute(text("SET LOCAL app.user_id = :uid"), {"uid": str(user_id)})
+    db.execute(text("SET LOCAL app.org_id = :oid"), {"oid": str(org_id)})
+
+
+def set_actor(db: Session, username: str) -> None:
+    """Legacy: set only the audit actor (no org context).
+
+    Used by install-level operations (lifecycle, setup) that don't have
+    an org scope. Kept for backward compatibility during the transition.
     """
     db.execute(text("SET LOCAL app.username = :u"), {"u": username})
 
