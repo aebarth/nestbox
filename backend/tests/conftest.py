@@ -5,7 +5,9 @@ and drop their own `nestbox_test` database next to it.
 Multi-org (schema v5): db-init creates the nestbox_app / nestbox_admin DB
 roles. The app engine connects as nestbox_app so RLS is genuinely exercised
 (a superuser connection would bypass it), and the worker engine as
-nestbox_admin (BYPASSRLS) for cross-org operations.
+nestbox_admin (BYPASSRLS) for cross-org operations. Schema management
+(apply_migrations in the app lifespan) runs as the server role, since
+migrations do DDL that nestbox_app may not.
 """
 import os
 from pathlib import Path
@@ -20,8 +22,8 @@ TEST_DB = "nestbox_test"
 
 _p = urlparse(SERVER_URL)
 _hostport = f"{_p.hostname}:{_p.port}"
-# Superuser connection, used only to create/drop the test DB and run db-init
-# (db-init must run as a role that can CREATE ROLE).
+# Server-role connection, used to create/drop the test DB, run db-init
+# (which creates the app roles), and apply migrations (DDL).
 TEST_SERVER_URL = f"{_p.scheme}://{_p.username}:{_p.password}@{_hostport}/{TEST_DB}"
 # The app itself connects as the RLS-subject role; worker as BYPASSRLS.
 TEST_APP_URL = f"{_p.scheme}://nestbox_app:nestbox_app@{_hostport}/{TEST_DB}"
@@ -29,6 +31,7 @@ TEST_WORKER_URL = f"{_p.scheme}://nestbox_admin:nestbox_admin@{_hostport}/{TEST_
 
 os.environ["DATABASE_URL"] = TEST_APP_URL
 os.environ["WORKER_DB_URL"] = TEST_WORKER_URL
+os.environ["SCHEMA_DB_URL"] = TEST_SERVER_URL
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
 DB_INIT = Path(__file__).resolve().parents[2] / "db-init"
