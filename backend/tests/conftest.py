@@ -22,9 +22,17 @@ TEST_DB = "nestbox_test"
 
 _p = urlparse(SERVER_URL)
 _hostport = f"{_p.hostname}:{_p.port}"
-# Server-role connection, used to create/drop the test DB, run db-init
-# (which creates the app roles), and apply migrations (DDL).
+
+# Bootstrap connection: points to the EXISTING server database (e.g. `nestbox`).
+# Used ONLY for the CREATE/DROP DATABASE step — you can't connect to nestbox_test
+# to create nestbox_test.
+BOOTSTRAP_URL = SERVER_URL
+
+# Server-role connection to the test DB (valid only AFTER it exists).
+# Used to run db-init (which creates nestbox_app/nestbox_admin) and apply
+# migrations (DDL).
 TEST_SERVER_URL = f"{_p.scheme}://{_p.username}:{_p.password}@{_hostport}/{TEST_DB}"
+
 # The app itself connects as the RLS-subject role; worker as BYPASSRLS.
 TEST_APP_URL = f"{_p.scheme}://nestbox_app:nestbox_app@{_hostport}/{TEST_DB}"
 TEST_WORKER_URL = f"{_p.scheme}://nestbox_admin:nestbox_admin@{_hostport}/{TEST_DB}"
@@ -42,13 +50,17 @@ def database():
     import sqlalchemy
     from sqlalchemy import text
 
-    admin = sqlalchemy.create_engine(TEST_SERVER_URL, isolation_level="AUTOCOMMIT")
+    # Connect to the EXISTING server DB (e.g. `nestbox`) to create/drop the
+    # test database. This must NOT be TEST_SERVER_URL — that points at
+    # nestbox_test which doesn't exist yet.
+    admin = sqlalchemy.create_engine(BOOTSTRAP_URL, isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
         conn.execute(text(f"CREATE DATABASE {TEST_DB}"))
     admin.dispose()
 
-    # Apply db-init as the server role (it creates nestbox_app/nestbox_admin).
+    # Now connect to the test DB (which exists) as the server role to run
+    # db-init. It creates nestbox_app/nestbox_admin and all tables.
     # raw DBAPI cursor: the audit SQL contains % characters that psycopg2
     # would otherwise treat as parameter placeholders.
     init_engine = sqlalchemy.create_engine(TEST_SERVER_URL)
