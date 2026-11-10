@@ -4,15 +4,16 @@ from sqlalchemy.orm import Session
 
 import schemas
 from database import get_db
-from models import Project, RecordType, User
-from security import get_current_user, require_org_admin
+from models import Project, RecordType
+from security import get_current_user_with_org, require_org_admin
 
 router = APIRouter(prefix="/api/lookups", tags=["lookups"])
 
 
 @router.get("/projects", response_model=list[schemas.ProjectOut])
-def list_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    # RLS scopes to the caller's org
+def list_projects(db: Session = Depends(get_db), _auth: tuple = Depends(get_current_user_with_org)):
+    # RLS scopes to the caller's org (context set by get_current_user_with_org);
+    # pending tokens (no org_id claim) are rejected with 403.
     return db.execute(select(Project).order_by(Project.code)).scalars().all()
 
 
@@ -43,8 +44,8 @@ def update_project(project_id: int, body: schemas.LookupIn, db: Session = Depend
 
 
 @router.get("/record-types", response_model=list[schemas.RecordTypeOut])
-def list_record_types(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    # RLS scopes to the caller's org
+def list_record_types(db: Session = Depends(get_db), _auth: tuple = Depends(get_current_user_with_org)):
+    # RLS scopes to the caller's org; pending tokens rejected with 403.
     return db.execute(select(RecordType).order_by(RecordType.code)).scalars().all()
 
 
