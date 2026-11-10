@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import FolderRule, Project, Record, RecordType, User
-from security import get_current_user, require_admin
+from security import get_current_user, require_org_admin
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
@@ -49,6 +49,7 @@ def _suggest_type(folder: str, types: list[RecordType]) -> tuple[int | None, flo
 @router.get("/folders")
 def folder_summary(source_id: int, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
+    # RLS scopes records, record types and rules to the caller's org
     folder = _folder_of(Record.path).label("folder")
     rows = db.execute(
         select(
@@ -104,8 +105,12 @@ class ApplyIn(BaseModel):
     save_rules: bool = True     # keep as folder_rules for future scans
 
 
-@router.post("/apply", dependencies=[Depends(require_admin)])
-def apply(body: ApplyIn, db: Session = Depends(get_db)):
+@router.post("/apply")
+def apply(body: ApplyIn, db: Session = Depends(get_db),
+          auth: tuple = Depends(require_org_admin)):
+    _user, org_id, _role = auth
+    # RLS scopes records/types/rules to the caller's org; unknown cross-org
+    # ids simply won't resolve.
     types = {rt.id: rt for rt in db.execute(select(RecordType)).scalars()}
     updated_total = 0
 
@@ -151,7 +156,7 @@ def apply(body: ApplyIn, db: Session = Depends(get_db)):
                 existing.project_id = m.project_id
                 existing.is_active = True
             else:
-                db.add(FolderRule(source_id=body.source_id, folder_prefix=m.folder,
+                db.add(FolderRule(org_id=org_id, source_id=body.source_id, folder_prefix=m.folder,
                                   record_type_id=m.record_type_id, project_id=m.project_id))
 
     db.commit()
