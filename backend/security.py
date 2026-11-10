@@ -213,9 +213,14 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-def require_org_admin() -> tuple[User, int, str]:
-    """Org-level admin (org_role in owner/admin). For org-scoped admin ops."""
-    user, org_id, org_role = get_current_user_with_org()
+def require_org_admin(auth: tuple = Depends(get_current_user_with_org)) -> tuple[User, int, str]:
+    """Org-level admin (org_role in owner/admin). For org-scoped admin ops.
+
+    MUST use Depends() to let FastAPI inject the db session and cookie into
+    get_current_user_with_org — calling it directly would pass unresolved
+    Depends/Cookie marker objects as arguments, causing JWT decode to fail.
+    """
+    user, org_id, org_role = auth
     if org_role not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Organization admin access required")
     return user, org_id, org_role
