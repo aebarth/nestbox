@@ -11,8 +11,8 @@ from fastapi import Cookie, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import get_db, set_actor
-from models import User
+from database import get_db, set_org_context
+from models import OrgMember, User
 
 log = logging.getLogger("nestbox.security")
 
@@ -79,15 +79,17 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def issue_token(response: Response, username: str) -> None:
-    token = jwt.encode(
-        {
-            "sub": username,
-            "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS),
-        },
-        SECRET_KEY,
-        algorithm="HS256",
-    )
+def issue_token(response: Response, username: str, org_id: int | None = None, org_role: str | None = None) -> None:
+    """Issue a JWT with optional org claims and set it as an HTTP cookie."""
+    claims: dict = {
+        "sub": username,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS),
+    }
+    if org_id is not None:
+        claims["org_id"] = org_id
+    if org_role is not None:
+        claims["org_role"] = org_role
+    token = jwt.encode(claims, SECRET_KEY, algorithm="HS256")
     response.set_cookie(
         COOKIE_NAME,
         token,
@@ -106,20 +108,92 @@ def get_current_user(
     db: Session = Depends(get_db),
     nestbox_token: str | None = Cookie(default=None),
 ) -> User:
+    """Authenticate the request and set org context for RLS.
+
+    The JWT must carry org_id (issued at login/select-org). We verify the
+    membership still exists (defense-in-depth beyond RLS) and set the
+    session GUCs that drive both RLS filtering and audit attribution.
+    """
     if not nestbox_token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(nestbox_token, SECRET_KEY, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Session expired or invalid")
+
     user = db.execute(select(User).where(User.username == payload["sub"])).scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Account unavailable")
-    set_actor(db, user.username)
+
+    org_id = payload.get("org_id")
+    if org_id is not None:
+        # Verify membership (defense-in-depth: RLS is the backstop, but we
+        # want a clear 403 rather than silently returning zero rows).
+        membership = db.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user.id,
+                OrgMember.org_id == org_id,
+            )
+        ).scalar_one_or_none()
+        if membership is None:
+            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        set_org_context(db, user.username, user.id, org_id)
+    else:
+        # Install-level operation (setup, lifecycle) — no org scope.
+        from database import set_actor
+        set_actor(db, user.username)
+
     return user
+
+
+def get_current_user_with_org(
+    db: Session = Depends(get_db),
+    nestbox_token: str | None = Cookie(default=None),
+) -> tuple[User, int, str]:
+    """Like get_current_user but requires org context. Returns (user, org_id, org_role).
+
+    Use this dependency for all org-scoped endpoints. Raises 403 if the token
+    lacks org claims or the membership no longer exists.
+    """
+    if not nestbox_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(nestbox_token, SECRET_KEY, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+
+    user = db.execute(select(User).where(User.username == payload["sub"])).scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Account unavailable")
+
+    org_id = payload.get("org_id")
+    org_role = payload.get("org_role", "member")
+    if org_id is None:
+        raise HTTPException(status_code=403, detail="No organization selected")
+
+    membership = db.execute(
+        select(OrgMember).where(
+            OrgMember.user_id == user.id,
+            OrgMember.org_id == org_id,
+        )
+    ).scalar_one_or_none()
+    if membership is None:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+    set_org_context(db, user.username, user.id, org_id)
+    return user, org_id, membership.role
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
+    """Install-level admin (user.role == 'admin'). For lifecycle, user management."""
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def require_org_admin() -> tuple[User, int, str]:
+    """Org-level admin (org_role in owner/admin). For org-scoped admin ops."""
+    user, org_id, org_role = get_current_user_with_org()
+    if org_role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Organization admin access required")
+    return user, org_id, org_role
