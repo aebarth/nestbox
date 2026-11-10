@@ -1,7 +1,8 @@
 def test_login_lockout_after_failures(admin_client, db_session):
     from security import LOCKOUT_ATTEMPTS
 
-    # a dedicated account so failures don't pollute other tests
+    # a dedicated account so failures don't pollute other tests. No org
+    # membership needed: lockout fires before the org check in /login.
     admin_client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
     admin_client.post("/api/admin/users", json={
         "username": "lockme", "password": "lockmepass1", "role": "user",
@@ -17,20 +18,25 @@ def test_login_lockout_after_failures(admin_client, db_session):
     admin_client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
 
 
-def test_record_lifecycle_is_admin_only(admin_client, db_session):
-    from database import set_actor
-    from models import Record, Source
+def test_record_lifecycle_is_admin_only(admin_client, org_db, default_org_id):
+    from models import Record
     from sqlalchemy import select
 
-    source = db_session.execute(select(Source)).scalars().first()
-    set_actor(db_session, "pytest")
-    rec = Record(source_id=source.id, path="sec-test.pdf", name="sec-test.pdf",
-                 title="sec", status="active")
-    db_session.add(rec)
-    db_session.commit()
+    source = org_db.execute(select(Source)).scalars().first() if False else None
+    # (kept simple: the setup-created Scan Inbox source is guaranteed to exist)
+    from models import Source as _Source
 
+    source = org_db.execute(select(_Source)).scalars().first()
+    rec = Record(org_id=default_org_id, source_id=source.id, path="sec-test.pdf",
+                 name="sec-test.pdf", title="sec", status="active")
+    org_db.add(rec)
+    org_db.commit()
+
+    # v5: plainuser gets a membership (required to log in) but only the
+    # 'member' org role — lifecycle changes need owner/admin
     admin_client.post("/api/admin/users", json={
         "username": "plainuser", "password": "plainpass1", "role": "user",
+        "org_id": default_org_id, "org_role": "member",
     })
     admin_client.post("/api/auth/login",
                       json={"username": "plainuser", "password": "plainpass1"})
