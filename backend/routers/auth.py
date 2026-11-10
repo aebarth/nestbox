@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -9,11 +10,14 @@ import schemas
 from database import get_db, set_actor
 from models import Organization, OrgMember, RecordType, Source, User
 from security import (
+    COOKIE_NAME,
+    SECRET_KEY,
     check_login_allowed,
     clear_token,
     equalize_timing,
     get_current_user,
     hash_password,
+    issue_pending_token,
     issue_token,
     record_login_failure,
     record_login_success,
@@ -122,8 +126,9 @@ def login(body: schemas.LoginIn, request: Request, response: Response,
           db: Session = Depends(get_db)):
     """Login with org auto-select or multi-org picker.
 
-    - User in exactly 1 org → token issued, needs_org_selection=False
-    - User in multiple orgs → no token, needs_org_selection=True + org list
+    - User in exactly 1 org → full token issued, needs_org_selection=False
+    - User in multiple orgs → short-lived pending token + org list; the
+      client must call /select-org to exchange it for a full token
     - User in 0 orgs → 403
     """
     client = request.client.host if request.client else "unknown"
@@ -158,34 +163,54 @@ def login(body: schemas.LoginIn, request: Request, response: Response,
         issue_token(response, user.username, org_id=org.id, org_role=member.role)
         return LoginOut(needs_org_selection=False, user=user)
 
-    # Multiple orgs: return the list for the client to pick from
+    # Multiple orgs: pending token + list for the client to pick from
+    issue_pending_token(response, user.username)
     org_list = [OrgOut(id=o.id, name=o.name, kind=o.kind, role=m.role) for m, o in memberships]
     return LoginOut(needs_org_selection=True, orgs=org_list, user=user)
 
 
-@router.post("/select-org")
-def select_org(body: SelectOrgIn, response: Response, db: Session = Depends(get_db)):
-    """Select an organization after login (or switch from the header).
+@router.post("/select-org", response_model=LoginOut)
+def select_org(body: SelectOrgIn, request: Request, response: Response,
+               db: Session = Depends(get_db)):
+    """Exchange a pending token (post multi-org login) for a full org-scoped
+    token — or switch the active org when already holding a full token.
 
-    Requires a valid session (any token for this user) OR can be called
-    immediately after login before a token is issued (the login endpoint
-    sets a short-lived "pending" cookie — simplified here: we accept the
-    call if the user has a valid cookie OR we're in the login flow).
-
-    For v1 simplicity: this endpoint requires the user to already have a
-    token (even without org claims). The frontend calls it after the
-    multi-org login response.
+    Accepts either token shape from the cookie; in both cases membership in
+    the requested org is verified server-side before issuing.
     """
-    # We need to identify the user — use the existing cookie if present,
-    # or fall back to the "pending" mechanism. For v1, require a valid token.
-    from fastapi import Cookie as FCookie
-    # Re-decode the token to get the username (org_id may be absent)
-    nestbox_token = request_cookie  # will be set by dependency below
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = pyjwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except pyjwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
 
-    # Actually, let's use a simpler approach: accept username+org_id in body
-    # and verify via a short-lived session. For v1, we'll just require the
-    # standard auth cookie (which may lack org claims after multi-org login).
-    pass
+    user = db.execute(select(User).where(User.username == payload["sub"])).scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Account unavailable")
+
+    membership = db.execute(
+        select(OrgMember).where(
+            OrgMember.user_id == user.id,
+            OrgMember.org_id == body.org_id,
+        )
+    ).scalar_one_or_none()
+    org = db.execute(
+        select(Organization).where(
+            Organization.id == body.org_id,
+            Organization.is_active == True,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    if membership is None or org is None:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+    issue_token(response, user.username, org_id=org.id, org_role=membership.role)
+    return LoginOut(
+        needs_org_selection=False,
+        orgs=[OrgOut(id=org.id, name=org.name, kind=org.kind, role=membership.role)],
+        user=user,
+    )
 
 
 @router.post("/logout")
