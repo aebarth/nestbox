@@ -95,7 +95,7 @@ def test_database_enforces_isolation(db_session, org_b):
         "SELECT id FROM organizations ORDER BY created_at LIMIT 1"
     )).scalar_one()
 
-    # seed one project per org as the table owner
+    # seed one project per org as the table owner (bypasses RLS)
     with schema_engine.begin() as conn:
         for oid, code in ((org_a, "DB-A"), (org_b, "DB-B")):
             conn.execute(
@@ -118,9 +118,9 @@ def test_database_enforces_isolation(db_session, org_b):
         db_session.commit()
     db_session.rollback()
 
-    # cleanup via owner so other tests' counts stay predictable
-    with schema_engine.begin() as conn:
-        conn.execute(text("DELETE FROM projects WHERE code IN ('DB-A', 'DB-B')"))
+    # Note: no DELETE cleanup — the append-only trigger forbids it by design.
+    # The DB-A/DB-B rows are harmless: they have unique codes and RLS ensures
+    # other orgs' tests never see them.
 
 
 def test_multi_org_login_and_select_org(admin_client, org_b):
