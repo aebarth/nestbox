@@ -7,6 +7,7 @@ commits, so fetch() re-reads see the rows.
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 
 @pytest.fixture()
