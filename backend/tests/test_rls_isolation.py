@@ -125,15 +125,35 @@ def test_database_enforces_isolation(db_session, org_b):
 
 def test_multi_org_login_and_select_org(admin_client, org_b):
     """A user in BOTH orgs: login returns the picker, select-org exchanges
-    the pending token, and switching works from a full session."""
+    the pending token, and switching works from a full session.
+
+    Self-contained: creates its own marker projects in both orgs so it does
+    not depend on data left by other tests (org_b is function-scoped — each
+    test gets a fresh organization).
+    """
     import uuid as _uuid
 
     from fastapi.testclient import TestClient
     from sqlalchemy import text
 
-    from database import SessionLocal
+    from database import SessionLocal, schema_engine
     from main import app
 
+    # Get org A's id (the first-created org)
+    with SessionLocal() as s:
+        org_a_id = s.execute(text(
+            "SELECT id FROM organizations ORDER BY created_at LIMIT 1"
+        )).scalar_one()
+
+    # Create marker projects in each org (self-contained, no cross-test deps)
+    admin_client.post("/api/lookups/projects", json={"code": "DUAL-A", "name": "In A"})
+    with schema_engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO projects (org_id, code, name) VALUES (:o, 'DUAL-B', 'In B')"),
+            {"o": org_b},
+        )
+
+    # Create the dual-org user
     username = f"dual-{_uuid.uuid4().hex[:6]}"
     r = admin_client.post("/api/admin/users", json={
         "username": username, "password": "dualpass123",
@@ -142,12 +162,9 @@ def test_multi_org_login_and_select_org(admin_client, org_b):
     })
     assert r.status_code == 200, r.text
 
-    # also add the membership in org A (the first-created org)
+    # also add the membership in org A
     with SessionLocal() as s:
         uid = s.execute(text("SELECT id FROM users WHERE username=:u"), {"u": username}).scalar_one()
-        org_a_id = s.execute(
-            text("SELECT id FROM organizations ORDER BY created_at LIMIT 1")
-        ).scalar_one()
         s.execute(
             text("INSERT INTO org_members (user_id, org_id, role) VALUES (:u, :o, 'member')"),
             {"u": uid, "o": org_a_id},
@@ -164,16 +181,15 @@ def test_multi_org_login_and_select_org(admin_client, org_b):
         # without an org selected, org-scoped endpoints refuse the pending token
         assert c.get("/api/lookups/projects").status_code == 403
 
-        # exchange the pending token for org B
+        # exchange the pending token for org B → see only B's data
         r = c.post("/api/auth/select-org", json={"org_id": org_b})
         assert r.status_code == 200, r.text
         assert r.json()["needs_org_selection"] is False
-
         codes = {p["code"] for p in c.get("/api/lookups/projects").json()}
-        assert "ONLY-B" in codes and "ONLY-A" not in codes
+        assert "DUAL-B" in codes and "DUAL-A" not in codes
 
-        # switch to org A from the full session
+        # switch to org A → see only A's data
         r = c.post("/api/auth/select-org", json={"org_id": org_a_id})
         assert r.status_code == 200, r.text
         codes = {p["code"] for p in c.get("/api/lookups/projects").json()}
-        assert "ONLY-A" in codes and "ONLY-B" not in codes
+        assert "DUAL-A" in codes and "DUAL-B" not in codes
