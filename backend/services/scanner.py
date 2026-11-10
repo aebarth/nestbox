@@ -8,8 +8,9 @@ Identity rules:
 
 Multi-org (v5): every row written here carries an explicit org_id derived
 from its parent (record → source). The worker connects as nestbox_admin
-(BYPASSRLS), so RLS does not filter these writes — the org_id columns and
-the per-org duplicate-grouping below are what keep orgs isolated.
+(BYPASSRLS), so RLS does not filter these writes — the org_id columns, the
+per-org duplicate-grouping, and execute_run's per-org source scoping are
+what keep orgs isolated.
 """
 import logging
 import os
@@ -361,6 +362,10 @@ def execute_run(db: Session, run: ScanRun) -> None:
     committed) before calling here; we only do the work and set the final
     status. _heartbeat() extends the lease per source so a long run is never
     reaped mid-flight.
+
+    Runs are per-org (v5): a run only ever touches its own org's sources.
+    The worker session is BYPASSRLS and can see everything — this scoping is
+    what stops org A's manual/scheduled run from scanning org B's files.
     """
     if run.status != "running":
         # Direct/test invocation without a prior claim: behave as before.
@@ -373,13 +378,16 @@ def execute_run(db: Session, run: ScanRun) -> None:
             sources = [db.get(Source, run.source_id)]
         else:
             sources = db.execute(
-                select(Source).where(Source.is_active.is_(True), Source.is_monitored.is_(True))
+                select(Source).where(
+                    Source.org_id == run.org_id,
+                    Source.is_active.is_(True), Source.is_monitored.is_(True)
+                )
             ).scalars().all()
 
         totals: dict[str, int] = {}
         errors = []
         for source in sources:
-            if source is None or not source.is_active:
+            if source is None or not source.is_active or source.org_id != run.org_id:
                 continue
             _heartbeat(db, run)  # keep the lease alive across long runs
             try:
