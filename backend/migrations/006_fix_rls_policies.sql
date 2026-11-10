@@ -14,8 +14,10 @@
 -- fail closed (no rows visible, no cross-org leakage) instead of erroring.
 -- Idempotent: safe to run on a fresh install too (db-init already applies the
 -- same fix via 05-fix-rls.sql).
-
-BEGIN;
+--
+-- NOTE: Do NOT include BEGIN/COMMIT or INSERT INTO schema_version here.
+-- The migration runner (database.py::apply_migrations) manages the
+-- transaction and records the version itself.
 
 CREATE OR REPLACE FUNCTION current_org_id() RETURNS BIGINT AS $$
 DECLARE v TEXT;
@@ -59,7 +61,3 @@ DROP POLICY IF EXISTS audit_org_scope ON audit_log;
 CREATE POLICY audit_org_scope ON audit_log
     USING (org_id IS NULL OR org_id = current_org_id())
     WITH CHECK (org_id IS NULL OR org_id = current_org_id());
-
-INSERT INTO schema_version (version) VALUES (6);
-
-COMMIT;
