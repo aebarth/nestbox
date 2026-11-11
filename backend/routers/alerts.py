@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 import schemas
 from database import get_db
 from models import Alert, DuplicateGroup, Record, User
-from security import get_current_user
+from security import get_current_user, get_current_user_with_org
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -29,6 +29,7 @@ def list_alerts(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # RLS scopes alerts (and joined records) to the caller's org
     q = (
         select(Alert)
         .options(joinedload(Alert.record).joinedload(Record.source))
@@ -49,8 +50,10 @@ def review_alert(
     alert_id: int,
     body: schemas.AlertResolveIn,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    auth: tuple = Depends(get_current_user_with_org),
 ):
+    user, _org_id, org_role = auth
+    # RLS: alerts from other orgs are invisible → 404
     a = db.execute(
         select(Alert)
         .options(joinedload(Alert.record).joinedload(Record.source))
@@ -63,9 +66,9 @@ def review_alert(
     elif body.status == "resolved":
         if body.resolution not in ("accepted", "restored", "retired", "false_positive"):
             raise HTTPException(status_code=422, detail="Invalid resolution")
-        if body.resolution == "retired" and user.role != "admin":
+        if body.resolution == "retired" and org_role not in ("owner", "admin"):
             raise HTTPException(status_code=403,
-                                detail="Retiring a record requires an admin")
+                                detail="Retiring a record requires an organization admin")
         a.status = "resolved"
         a.resolution = body.resolution
         a.resolved_by = user.id
@@ -85,6 +88,7 @@ def review_alert(
 @router.post("/duplicates/{group_id}/dismiss")
 def dismiss_duplicate_group(group_id: int, db: Session = Depends(get_db),
                             user: User = Depends(get_current_user)):
+    # RLS: duplicate groups from other orgs are invisible → 404
     g = db.get(DuplicateGroup, group_id)
     if g is None:
         raise HTTPException(status_code=404, detail="Duplicate group not found")

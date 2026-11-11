@@ -6,7 +6,7 @@ import connectors
 import schemas
 from database import get_db
 from models import Source, User
-from security import get_current_user, require_admin
+from security import get_current_user, require_org_admin
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -19,12 +19,15 @@ def _out(s: Source) -> schemas.SourceOut:
 
 @router.get("", response_model=list[schemas.SourceOut])
 def list_sources(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # RLS scopes rows to the caller's org (context set by get_current_user)
     rows = db.execute(select(Source).order_by(Source.name)).scalars().all()
     return [_out(s) for s in rows]
 
 
-@router.post("", response_model=schemas.SourceOut, dependencies=[Depends(require_admin)])
-def create_source(body: schemas.SourceIn, db: Session = Depends(get_db)):
+@router.post("", response_model=schemas.SourceOut)
+def create_source(body: schemas.SourceIn, db: Session = Depends(get_db),
+                  auth: tuple = Depends(require_org_admin)):
+    _user, org_id, _role = auth
     if body.kind not in ("local", "gdrive", "graph_drive"):
         raise HTTPException(status_code=422, detail="Unknown source kind")
     if body.kind == "local":
@@ -36,6 +39,7 @@ def create_source(body: schemas.SourceIn, db: Session = Depends(get_db)):
             )
         body.config["root"] = root
     source = Source(
+        org_id=org_id,
         name=body.name,
         kind=body.kind,
         config=body.config,
@@ -48,8 +52,10 @@ def create_source(body: schemas.SourceIn, db: Session = Depends(get_db)):
     return _out(source)
 
 
-@router.patch("/{source_id}", response_model=schemas.SourceOut, dependencies=[Depends(require_admin)])
-def update_source(source_id: int, body: schemas.SourceIn, db: Session = Depends(get_db)):
+@router.patch("/{source_id}", response_model=schemas.SourceOut)
+def update_source(source_id: int, body: schemas.SourceIn, db: Session = Depends(get_db),
+                  auth: tuple = Depends(require_org_admin)):
+    # RLS: a source from another org is invisible → 404
     source = db.get(Source, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -66,6 +72,7 @@ def update_source(source_id: int, body: schemas.SourceIn, db: Session = Depends(
 
 @router.post("/{source_id}/test")
 def test_source(source_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # RLS hides other orgs' sources → 404
     source = db.get(Source, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")

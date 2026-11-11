@@ -1,6 +1,7 @@
 -- Append-only audit trail.
--- The API sets `SET LOCAL app.username = '<actor>'` per transaction; anything
--- else (loader, worker, psql) is recorded as 'system'.
+-- The API sets `SET LOCAL app.username = '<actor>'` and
+-- `SET LOCAL app.org_id = '<org>'` per transaction; anything else
+-- (loader, worker, psql) is recorded as 'system' with NULL org.
 -- Enforcement is trigger-based so it holds even for the table owner:
 --   * every INSERT/UPDATE on audited tables is copied to audit_log
 --   * DELETE on audited tables is rejected outright
@@ -9,9 +10,17 @@
 CREATE OR REPLACE FUNCTION audit_row_change() RETURNS trigger AS $$
 DECLARE
     actor TEXT := COALESCE(NULLIF(current_setting('app.username', TRUE), ''), 'system');
+    org_id BIGINT;
     cols  TEXT[] := '{}';
     k     TEXT;
 BEGIN
+    -- Capture org context (NULL if not set, e.g. system operations)
+    BEGIN
+        org_id := NULLIF(current_setting('app.org_id', TRUE), '')::bigint;
+    EXCEPTION WHEN undefined_column OR invalid_text_representation THEN
+        org_id := NULL;
+    END;
+
     IF TG_OP = 'UPDATE' THEN
         FOR k IN SELECT jsonb_object_keys(to_jsonb(NEW)) LOOP
             IF to_jsonb(NEW) -> k IS DISTINCT FROM to_jsonb(OLD) -> k THEN
@@ -21,11 +30,11 @@ BEGIN
         IF cols = '{}' THEN
             RETURN NEW;  -- no-op update, don't clutter the log
         END IF;
-        INSERT INTO audit_log (username, table_name, row_pk, action, old_row, new_row, changed_cols)
-        VALUES (actor, TG_TABLE_NAME, NEW.id, 'UPDATE', to_jsonb(OLD), to_jsonb(NEW), cols);
+        INSERT INTO audit_log (username, table_name, row_pk, action, old_row, new_row, changed_cols, org_id)
+        VALUES (actor, TG_TABLE_NAME, NEW.id, 'UPDATE', to_jsonb(OLD), to_jsonb(NEW), cols, org_id);
     ELSE
-        INSERT INTO audit_log (username, table_name, row_pk, action, new_row)
-        VALUES (actor, TG_TABLE_NAME, NEW.id, 'INSERT', to_jsonb(NEW));
+        INSERT INTO audit_log (username, table_name, row_pk, action, new_row, org_id)
+        VALUES (actor, TG_TABLE_NAME, NEW.id, 'INSERT', to_jsonb(NEW), org_id);
     END IF;
     RETURN NEW;
 END;

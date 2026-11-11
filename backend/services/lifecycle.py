@@ -13,6 +13,14 @@ explicit audit_log row with the acting user.
 
 pg_dump/pg_restore are shell-invoked; the backend image ships
 postgresql-client for that reason.
+
+Multi-org (v5): all privileged work runs as the table-OWNER role
+(SCHEMA_DB_URL), not nestbox_app:
+  * pg_dump/pg_restore — restore must CREATE tables (schema CREATE privilege)
+  * pg_terminate_backend — only superusers/role-mates may terminate others
+  * DROP SCHEMA — requires ownership of every object in it
+  * lifecycle audit rows — they are install-level (org_id NULL), and the
+    audit_log RLS policy does not allow nestbox_app to insert NULL-org rows
 """
 import hashlib
 import json
@@ -58,13 +66,15 @@ def backup_dir() -> Path:
     return d
 
 
-def _db_params() -> dict:
-    """Connection parameters for pg_dump/pg_restore, from DATABASE_URL.
+def _schema_db_params() -> dict:
+    """Connection parameters for pg_dump/pg_restore, from SCHEMA_DB_URL.
 
-    Read at call time (not import time) so tests can point the app at the
-    test database before these functions run.
+    The owner role is required: pg_restore must CREATE schema objects and
+    an owner-level dump captures full fidelity (ACLs, ownership). Read at
+    call time (not import time) so tests can point the app at the test
+    database before these functions run.
     """
-    url = os.environ.get("DATABASE_URL", "")
+    url = os.environ.get("SCHEMA_DB_URL", "")
     if url.startswith("postgresql+"):
         url = "postgresql" + url.split("+", 1)[1]
     p = urlparse(url)
@@ -79,7 +89,7 @@ def _db_params() -> dict:
 
 def _pg_env() -> dict:
     env = dict(os.environ)
-    env["PGPASSWORD"] = _db_params()["password"]
+    env["PGPASSWORD"] = _schema_db_params()["password"]
     return env
 
 
@@ -94,19 +104,27 @@ def _sha256(path: Path) -> str:
 def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dict) -> None:
     """Explicit audit_log entry for a lifecycle action (see module docstring).
 
+    Runs on the owner-role engine in its own transaction: lifecycle audit
+    rows are install-level (org_id NULL), which the audit_log RLS policy
+    does not permit nestbox_app to insert, and the caller's session may be
+    mid-rollback or stale during restore/reset.
+
     The detail is serialized to a JSON string here and cast with CAST():
     untyped text() parameters are not adapted to JSONB by psycopg2, and the
     `:name::jsonb` shorthand is NOT parsed as a bind parameter by SQLAlchemy
     2.0 (a name immediately followed by another colon renders literally), so
     an explicit CAST is required.
     """
-    db.execute(
-        text(
-            "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
-            "VALUES (:u, 'lifecycle', :pk, :a, CAST(:d AS jsonb), '{}')"
-        ),
-        {"u": actor, "pk": row_pk, "a": action, "d": json.dumps(detail)},
-    )
+    from database import schema_engine
+
+    with schema_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
+                "VALUES (:u, 'lifecycle', :pk, :a, CAST(:d AS jsonb), '{}')"
+            ),
+            {"u": actor, "pk": row_pk, "a": action, "d": json.dumps(detail)},
+        )
 
 
 def create_backup(
@@ -121,7 +139,7 @@ def create_backup(
     Commits on success; raises LifecycleError (and rolls back) on failure,
     removing a partial dump file if one was left behind.
     """
-    params = _db_params()
+    params = _schema_db_params()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     import uuid
 
@@ -185,11 +203,13 @@ def _terminate_other_sessions() -> None:
     """End every other session on this database so schema operations can proceed.
 
     Admin-initiated restores/resets are expected to interrupt in-flight work;
-    the engine's pool reconnects lazily (pool_pre_ping) afterwards.
+    the engine's pool reconnects lazily (pool_pre_ping) afterwards. Runs as
+    the owner role — pg_terminate_backend refuses cross-user termination
+    otherwise.
     """
-    from database import engine
+    from database import schema_engine
 
-    with engine.connect() as conn:
+    with schema_engine.connect() as conn:
         pids = conn.execute(text(
             "SELECT pid FROM pg_stat_activity "
             "WHERE datname = current_database() AND pid <> pg_backend_pid()"
@@ -201,14 +221,15 @@ def _terminate_other_sessions() -> None:
 def _drop_and_recreate_schema() -> None:
     """Drop and recreate the public schema on a dedicated raw connection.
 
+    Runs as the owner role (DROP SCHEMA requires ownership of every object).
     Uses SET LOCAL lock_timeout so that if a session grabs a lock after
     _terminate_other_sessions() ran, we fail fast instead of hanging.
     The raw connection is separate from the engine pool so it isn't affected
     by the terminate (and won't poison pooled connections).
     """
-    from database import engine
+    from database import schema_engine
 
-    raw = engine.raw_connection()
+    raw = schema_engine.raw_connection()
     try:
         cur = raw.cursor()
         cur.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_SQL}'")
@@ -260,7 +281,7 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     _terminate_other_sessions()
     _drop_and_recreate_schema()
 
-    params = _db_params()
+    params = _schema_db_params()
     path = backup_dir() / backup_filename
     # No --clean: the schema is already empty, so pg_restore just creates
     # everything fresh. This avoids any lock contention during restore.
@@ -293,13 +314,10 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
 
     # The caller's session is stale (its tables were dropped/recreated); audit
     # on a fresh one so the record survives even though the old log was wiped.
-    from database import SessionLocal
-
-    with SessionLocal() as fresh:
-        _audit(fresh, actor_username, "UPDATE", backup_id_val, {
-            "op": "restore", "filename": backup_filename, "sha256": backup_sha256,
-        })
-        fresh.commit()
+    # _audit uses the owner-role engine directly (RLS-safe for NULL-org rows).
+    _audit(db, actor_username, "UPDATE", backup_id_val, {
+        "op": "restore", "filename": backup_filename, "sha256": backup_sha256,
+    })
     log.warning("Database restored from %s by %s", backup_filename, backup_sha256)
     return {"restored_from": backup_filename, "sha256": backup_sha256}
 
@@ -309,16 +327,18 @@ def reset_database(db: Session, actor_username: str = "system") -> dict:
 
     Takes a pre-reset backup first so an accidental reset is recoverable.
     The audit log is part of the wiped data; one row on the fresh schema
-    records that the reset happened and who did it.
+    records that the reset happened and who did it. Runs as the owner role:
+    DROP SCHEMA requires object ownership, and db-init re-creates the app
+    roles' grants.
     """
     pre = create_backup(db, kind="manual", actor_username=actor_username, notes="pre-reset backup")
 
     db.rollback()  # release our transaction's locks before DROP SCHEMA
     _terminate_other_sessions()
 
-    from database import engine
+    from database import schema_engine
 
-    raw = engine.raw_connection()
+    raw = schema_engine.raw_connection()
     try:
         cur = raw.cursor()
         # Fail fast if a session grabs a lock after the terminate above,

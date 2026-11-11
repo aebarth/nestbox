@@ -1,4 +1,10 @@
-"""Change-detection matrix against real temp directories."""
+"""Change-detection matrix against real temp directories.
+
+Multi-org (v5): fixtures run inside the default org's RLS context (org_db)
+and every directly-inserted row carries an explicit org_id. The session-
+scoped GUCs survive the commits inside scan_source, so reads after a scan
+still see the org's rows.
+"""
 import os
 import shutil
 
@@ -7,18 +13,17 @@ from sqlalchemy import select
 
 
 @pytest.fixture()
-def source_env(tmp_path, db_session, admin_client):
+def source_env(tmp_path, org_db, default_org_id, admin_client):
     os.environ["NESTBOX_SOURCE_ROOTS"] = str(tmp_path)
     root = tmp_path / "docs"
     root.mkdir()
-    from database import set_actor
     from models import Source
 
-    set_actor(db_session, "pytest")
-    source = Source(name=f"t-{tmp_path.name}", kind="local", config={"root": str(root)})
-    db_session.add(source)
-    db_session.commit()
-    return root, source, db_session
+    source = Source(org_id=default_org_id, name=f"t-{tmp_path.name}", kind="local",
+                    config={"root": str(root)})
+    org_db.add(source)
+    org_db.commit()
+    return root, source, org_db
 
 
 def write_pdf(path, content=b"%PDF-1.4 test content"):
@@ -27,12 +32,15 @@ def write_pdf(path, content=b"%PDF-1.4 test content"):
 
 
 def run_scan(db, source):
-    from database import set_actor
+    from database import set_org_context
     from models import ScanRun
     from services.scanner import scan_source
 
-    set_actor(db, "pytest")
-    run = ScanRun(source_id=source.id, kind="scan", trigger="manual", status="running")
+    # RLS context for this session (worker would be BYPASSRLS; tests run as
+    # nestbox_app so the GUCs are required for every org-scoped statement).
+    set_org_context(db, "pytest", 1, source.org_id)
+    run = ScanRun(org_id=source.org_id, source_id=source.id, kind="scan",
+                  trigger="manual", status="running")
     db.add(run)
     db.flush()
     stats = scan_source(db, source, run)

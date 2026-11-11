@@ -17,9 +17,11 @@ def test_wrong_password_rejected(admin_client):
     assert r.status_code == 401
 
 
-def test_role_guard(admin_client):
+def test_role_guard(admin_client, default_org_id):
+    # v5: a user needs an org membership to log in at all
     admin_client.post("/api/admin/users", json={
         "username": "clerk", "password": "clerkpass1", "role": "user",
+        "org_id": default_org_id, "org_role": "member",
     })
     r = admin_client.post("/api/auth/login", json={"username": "clerk", "password": "clerkpass1"})
     assert r.status_code == 200
@@ -29,9 +31,11 @@ def test_role_guard(admin_client):
     admin_client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
 
 
-def test_audit_rows_written_with_actor(admin_client, db_session):
+def test_audit_rows_written_with_actor(admin_client, org_db):
     admin_client.post("/api/lookups/projects", json={"code": "AUD-1", "name": "Audit test"})
-    row = db_session.execute(text(
+    # org_db carries the default org's RLS context; audit_log rows for this
+    # org are visible to it (plus install-level NULL-org rows)
+    row = org_db.execute(text(
         "SELECT username, action FROM audit_log WHERE table_name='projects' "
         "AND new_row->>'code'='AUD-1'"
     )).first()
@@ -40,14 +44,16 @@ def test_audit_rows_written_with_actor(admin_client, db_session):
     assert row.action == "INSERT"
 
 
-def test_deletes_blocked_at_database(admin_client, db_session):
+def test_deletes_blocked_at_database(org_db):
     # row-level triggers only fire on actual rows, so target tables that
-    # are guaranteed non-empty (admin user + its audit entries exist)
+    # are guaranteed non-empty (admin user + its audit entries exist).
+    # org_db sets the RLS context so the policies evaluate normally and the
+    # database-level block (not a missing-GUC error) is what raises.
     for stmt in (
         "DELETE FROM users",
         "UPDATE audit_log SET username='hacker' WHERE id = (SELECT min(id) FROM audit_log)",
         "DELETE FROM audit_log WHERE id = (SELECT min(id) FROM audit_log)",
     ):
         with pytest.raises(Exception, match="not permitted"):
-            db_session.execute(text(stmt))
-        db_session.rollback()
+            org_db.execute(text(stmt))
+        org_db.rollback()

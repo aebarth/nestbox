@@ -3,13 +3,19 @@
 Runs as its own container so long scans never block the API. Talks to the
 backend only through Postgres:
   * every 10s: pick up queued scan_runs (the API's "Scan Now" button)
-  * every minute: check cron schedules (global scan, weekly integrity,
-    per-source overrides, scheduled database backups) and enqueue/execute
+  * every minute: check cron schedules (per-org scan/integrity, per-source
+    overrides, scheduled database backups) and enqueue/execute
 
 Run claiming is lease-based: a run is claimed with UPDATE ... FOR UPDATE SKIP
 LOCKED and stamped with locked_at/lease_until. A worker that dies mid-run
 leaves the run 'running' past its lease; the reaper below returns it to
 'queued' so it is retried instead of stuck forever.
+
+Multi-org (v5): the worker connects as nestbox_admin (BYPASSRLS) — it must
+see every org to execute runs, and RLS would otherwise error on unset org
+context. Isolation is preserved because scan_runs are per-org (a run only
+touches its own org's sources) and all rows written carry an explicit
+org_id (see services/scanner.py).
 """
 import logging
 import time
@@ -18,8 +24,8 @@ from datetime import datetime, timezone
 from croniter import croniter
 from sqlalchemy import select, text
 
-from database import SessionLocal
-from models import ScanRun, Setting, Source
+from database import WorkerSessionLocal
+from models import Organization, OrgSetting, ScanRun, Setting, Source
 from services.scanner import RUN_LEASE_SECONDS, execute_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -34,9 +40,10 @@ def cron_matches(expr: str, minute: datetime) -> bool:
         return False
 
 
-def enqueue_scheduled(db, kind: str, source_id: int | None) -> None:
+def enqueue_scheduled(db, kind: str, source_id: int | None, org_id: int) -> None:
     exists = db.execute(
         select(ScanRun).where(
+            ScanRun.org_id == org_id,
             ScanRun.status.in_(("queued", "running")),
             ScanRun.kind == kind,
             ScanRun.source_id.is_(None) if source_id is None else ScanRun.source_id == source_id,
@@ -44,29 +51,39 @@ def enqueue_scheduled(db, kind: str, source_id: int | None) -> None:
     ).scalars().first()
     if exists:
         return
-    db.add(ScanRun(source_id=source_id, kind=kind, trigger="scheduled"))
+    db.add(ScanRun(org_id=org_id, source_id=source_id, kind=kind, trigger="scheduled"))
     db.commit()
-    log.info("Enqueued scheduled %s run (source_id=%s)", kind, source_id)
+    log.info("Enqueued scheduled %s run (org_id=%s source_id=%s)", kind, org_id, source_id)
 
 
 def check_schedules(db, minute: datetime) -> None:
-    settings = {s.key: s.value for s in db.execute(select(Setting)).scalars()}
-    global_cron = settings.get("schedule_cron")
-    integrity_cron = settings.get("integrity_cron")
-    if global_cron and cron_matches(global_cron, minute):
-        enqueue_scheduled(db, "scan", None)
-    if integrity_cron and cron_matches(integrity_cron, minute):
-        enqueue_scheduled(db, "integrity", None)
+    # Scan/integrity schedules are per-org (org_settings since schema v5).
+    for org in db.execute(
+        select(Organization).where(Organization.is_active.is_(True))
+    ).scalars():
+        settings = {
+            s.key: s.value
+            for s in db.execute(select(OrgSetting).where(OrgSetting.org_id == org.id)).scalars()
+        }
+        global_cron = settings.get("schedule_cron")
+        integrity_cron = settings.get("integrity_cron")
+        if global_cron and cron_matches(global_cron, minute):
+            enqueue_scheduled(db, "scan", None, org.id)
+        if integrity_cron and cron_matches(integrity_cron, minute):
+            enqueue_scheduled(db, "integrity", None, org.id)
+
+    # Per-source overrides live on the source row itself.
     for source in db.execute(
         select(Source).where(Source.is_active.is_(True), Source.scan_cron.isnot(None))
     ).scalars():
         if source.scan_cron and cron_matches(source.scan_cron, minute):
-            enqueue_scheduled(db, "scan", source.id)
+            enqueue_scheduled(db, "scan", source.id, source.org_id)
 
-    # Scheduled database backups (Phase 2.1, #9): settings key 'backup_cron',
-    # e.g. "0 3 * * *" for 03:00 daily. Runs inline (not via scan_runs) and
-    # prunes old dumps to NESTBOX_BACKUP_RETENTION afterwards. Failures are
-    # logged, never fatal to the loop.
+    # Scheduled database backups (Phase 2.1, #9): install-level setting
+    # 'backup_cron', e.g. "0 3 * * *" for 03:00 daily. Runs inline (not via
+    # scan_runs) and prunes old dumps to NESTBOX_BACKUP_RETENTION afterwards.
+    # Failures are logged, never fatal to the loop.
+    settings = {s.key: s.value for s in db.execute(select(Setting)).scalars()}
     backup_cron = settings.get("backup_cron")
     if backup_cron and cron_matches(backup_cron, minute):
         try:
@@ -148,7 +165,7 @@ def main() -> None:
     last_minute_checked = None
     while True:
         try:
-            with SessionLocal() as db:
+            with WorkerSessionLocal() as db:
                 minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
                 if minute != last_minute_checked:
                     last_minute_checked = minute
@@ -156,7 +173,7 @@ def main() -> None:
                 reap_stale_runs(db)
                 run = claim_next_run(db)
                 if run is not None:
-                    log.info("Executing run %s (%s)", run.id, run.kind)
+                    log.info("Executing run %s (%s, org %s)", run.id, run.kind, run.org_id)
                     execute_run(db, run)
                     continue  # drain the queue before sleeping
                 from services import ocr
