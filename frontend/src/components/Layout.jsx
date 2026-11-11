@@ -4,6 +4,7 @@ import {
   Bell,
   Database as DatabaseIcon,
   FileText,
+  Inbox as InboxIcon,
   LayoutDashboard,
   LogOut,
   Package,
@@ -18,6 +19,7 @@ import { api } from '../services/api.js'
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/files', label: 'Files', icon: FileText },
+  { to: '/inbox', label: 'Review Inbox', icon: InboxIcon },
   { to: '/wizard', label: 'Scan to Shelf', icon: ScanLine },
   { to: '/boxes', label: 'Boxes', icon: Package },
   { to: '/alerts', label: 'Alerts', icon: Bell },
