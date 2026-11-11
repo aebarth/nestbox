@@ -1,16 +1,20 @@
 from datetime import datetime, timedelta, timezone
 
+import re
+import subprocess
+import tempfile
+import os
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
-
-import re
 
 import schemas
 from database import get_db
 from models import Box, FileEvent, Project, Record, RecordType, User
-from security import get_current_user, require_org_admin
+from security import get_current_user, get_current_user_with_org, require_org_admin
 from services.scanner import add_event
 
 router = APIRouter(prefix="/api/records", tags=["records"])
@@ -153,6 +157,57 @@ def record_content(record_id: int, db: Session = Depends(get_db),
     )
 
 
+@router.get("/{record_id}/preview")
+def record_preview(record_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Return the first page of a PDF as a small JPEG thumbnail (120px height).
+
+    Uses pdftoppm (poppler-utils, already in the image for OCR). Non-PDF files
+    get a 404 so the frontend can show a generic file-type icon instead.
+    """
+    r = db.execute(
+        select(Record).options(joinedload(Record.source)).where(Record.id == record_id)
+    ).unique().scalar_one_or_none()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    # Only PDFs get a rendered preview; everything else → 404 (frontend shows icon)
+    if not r.path.lower().endswith(".pdf"):
+        raise HTTPException(status_code=404, detail="Preview available for PDF files only")
+
+    import connectors
+    from connectors.base import RemoteFile
+
+    try:
+        connector = connectors.get(r.source)
+        rf = RemoteFile(external_id=r.external_id, path=r.path, name=r.name,
+                        size=r.size_bytes, mtime=r.file_mtime)
+        with connector.open_stream(rf) as fh:
+            pdf_bytes = fh.read()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not read file for preview")
+
+    # Render first page to JPEG at 120px height using pdftoppm
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            ["pdftoppm", "-jpeg", "-f", "1", "-l", "1", "-scale-to-height", "120",
+             tmp_path, "/dev/stdout"],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout:
+            raise HTTPException(status_code=502, detail="Could not render preview")
+        return Response(content=result.stdout, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=3600"})
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Preview render timed out")
+    finally:
+        os.unlink(tmp_path)
+
+
 @router.get("/{record_id}/text")
 def record_text(record_id: int, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
@@ -263,6 +318,10 @@ def categorize(
             changes["box_id"] = {"from": r.box_id, "to": body.box_id}
             r.box_id = body.box_id
             r.filed_at = datetime.now(timezone.utc)
+            # Filing an inbox record promotes it to active
+            if r.status == "inbox":
+                r.status = "active"
+                changes["status"] = {"from": "inbox", "to": "active"}
             add_event(db, r, None, "filed", new={"box": box.box_number}, alert=False)
 
     # Retention: recompute when the record type is set/cleared or a filing lands.
@@ -280,6 +339,84 @@ def categorize(
     db.commit()
     db.refresh(r)
     return record_out(r)
+
+
+@router.post("/bulk-patch", response_model=schemas.BulkPatchOut)
+def bulk_patch(
+    body: schemas.BulkPatchIn,
+    db: Session = Depends(get_db),
+    auth: tuple = Depends(get_current_user_with_org),
+):
+    """Apply the same patch to many records in a single transaction.
+
+    Used by the review queue's bulk actions (select 10 inbox items → file into
+    one box). Each record gets its own audit_log row via the trigger. RLS-scoped:
+    only affects records visible to the caller's org.
+    """
+    user, org_id, org_role = auth
+    errors = []
+    updated = 0
+
+    # Validate box reference once (if provided)
+    box = None
+    if body.patch.box_id is not None:
+        box = db.get(Box, body.patch.box_id)
+        if box is None:
+            raise HTTPException(status_code=404, detail="Box not found")
+        if box.status != "open":
+            raise HTTPException(status_code=422, detail=f"Box {box.box_number} is {box.status}")
+
+    # Validate record type once (if provided)
+    rt = None
+    if body.patch.record_type_id is not None:
+        rt = db.get(RecordType, body.patch.record_type_id)
+
+    for rid in body.ids:
+        r = db.execute(
+            select(Record).where(Record.id == rid)
+        ).scalar_one_or_none()
+        if r is None:
+            errors.append({"id": rid, "detail": "not found"})
+            continue
+        if r.status in ("retired", "superseded"):
+            errors.append({"id": rid, "detail": f"read-only ({r.status})"})
+            continue
+
+        # Apply the same field logic as single-record PATCH
+        provided = body.patch.model_fields_set
+        for field in ("title", "lot_number", "part_number", "notes"):
+            if field in provided:
+                value = getattr(body.patch, field)
+                setattr(r, field, "" if value is None else value)
+
+        if "tags" in provided:
+            r.tags = [] if body.patch.tags is None else list(body.patch.tags)
+
+        for field in ("project_id", "record_type_id"):
+            if field in provided:
+                setattr(r, field, getattr(body.patch, field))
+
+        if "box_id" in provided and body.patch.box_id != r.box_id:
+            if body.patch.box_id is None:
+                r.box_id = None
+            else:
+                r.box_id = box.id
+                r.filed_at = datetime.now(timezone.utc)
+                if r.status == "inbox":
+                    r.status = "active"
+                add_event(db, r, None, "filed", new={"box": box.box_number}, alert=False)
+
+        # Retention recompute
+        if rt and rt.retention_years:
+            base = r.filed_at or r.first_seen_at or datetime.now(timezone.utc)
+            r.retention_until = (base + timedelta(days=365 * rt.retention_years)).date()
+        elif "record_type_id" in provided and body.patch.record_type_id is None:
+            r.retention_until = None
+
+        updated += 1
+
+    db.commit()
+    return schemas.BulkPatchOut(updated=updated, errors=errors)
 
 
 @router.post("/{record_id}/status", response_model=schemas.RecordOut)
