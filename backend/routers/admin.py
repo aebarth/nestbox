@@ -345,9 +345,9 @@ def update_member(
         )
     old_role = m.role
     m.role = body.role
+    username = db.execute(select(User.username).where(User.id == user_id)).scalar()
     audit_install_level(admin.username, "UPDATE", user_id, {
-        "op": "change_member_role", "org_id": org_id,
-        "username": admin.username and user_id,  # placeholder replaced below
+        "op": "change_member_role", "org_id": org_id, "username": username,
         "old_role": old_role, "new_role": body.role,
     })
     db.commit()
