@@ -9,6 +9,7 @@ import Boxes from './pages/Boxes.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Database from './pages/Database.jsx'
 import Files from './pages/Files.jsx'
+import Inbox from './pages/Inbox.jsx'
 import Login from './pages/Login.jsx'
 import Onboarding from './pages/Onboarding.jsx'
 import RecordLink from './pages/RecordLink.jsx'
@@ -51,6 +52,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/files" element={<Files user={user} />} />
+          <Route path="/inbox" element={<Inbox user={user} />} />
           <Route path="/wizard" element={<Wizard />} />
           <Route path="/boxes" element={<Boxes />} />
           <Route path="/alerts" element={<Alerts />} />

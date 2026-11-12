@@ -125,9 +125,24 @@ class RecordCategorizeIn(BaseModel):
 
 
 class RecordStatusIn(BaseModel):
-    status: str  # retired | superseded | active
+    status: str  # retired | superseded | active | inbox
     superseded_by_id: int | None = None
     reason: str = ""
+
+
+class BulkPatchIn(BaseModel):
+    """Bulk patch: apply the same field changes to many records at once.
+
+    Used by the review queue's bulk actions (select 10 inbox items → file
+    into one box). Each record gets its own audit_log row via the trigger.
+    """
+    ids: list[int] = Field(min_length=1, max_length=200)
+    patch: RecordCategorizeIn
+
+
+class BulkPatchOut(BaseModel):
+    updated: int
+    errors: list[dict] = []  # [{"id": 5, "detail": "not found"}]
 
 
 class RecordOut(ORMModel):

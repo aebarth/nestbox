@@ -10,6 +10,10 @@ from security import get_current_user, require_org_admin
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
+# Kinds the backend supports. Network kinds (smb, nfs) point at a mounted
+# folder inside the container — Docker volume mounts handle the protocol.
+VALID_KINDS = ("local", "smb", "nfs", "gdrive", "graph_drive")
+
 
 def _out(s: Source) -> schemas.SourceOut:
     out = schemas.SourceOut.model_validate(s)
@@ -28,14 +32,15 @@ def list_sources(db: Session = Depends(get_db), user: User = Depends(get_current
 def create_source(body: schemas.SourceIn, db: Session = Depends(get_db),
                   auth: tuple = Depends(require_org_admin)):
     _user, org_id, _role = auth
-    if body.kind not in ("local", "gdrive", "graph_drive"):
-        raise HTTPException(status_code=422, detail="Unknown source kind")
-    if body.kind == "local":
+    if body.kind not in VALID_KINDS:
+        raise HTTPException(status_code=422, detail=f"kind must be one of: {', '.join(VALID_KINDS)}")
+    if body.kind in ("local", "smb", "nfs"):
         root = str(body.config.get("root", "")).rstrip("/")
         if not root.startswith("/sources"):
             raise HTTPException(
                 status_code=422,
-                detail="Local folders must be under /sources (the NESTBOX_SOURCES_PATH mount), e.g. /sources/quality-records",
+                detail="File-based sources must point under /sources (the NESTBOX_SOURCES_PATH mount), "
+                       "e.g. /sources/quality-records or /sources/scanner-output",
             )
         body.config["root"] = root
     source = Source(
@@ -59,9 +64,12 @@ def update_source(source_id: int, body: schemas.SourceIn, db: Session = Depends(
     source = db.get(Source, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
+    if body.kind not in VALID_KINDS:
+        raise HTTPException(status_code=422, detail=f"kind must be one of: {', '.join(VALID_KINDS)}")
     if source.config.get("builtin_inbox") and not body.is_active:
         raise HTTPException(status_code=422, detail="The scan inbox cannot be deactivated")
     source.name = body.name
+    source.kind = body.kind
     source.config = {**body.config, **({"builtin_inbox": True} if source.config.get("builtin_inbox") else {})}
     source.is_monitored = body.is_monitored
     source.scan_cron = body.scan_cron
@@ -72,12 +80,19 @@ def update_source(source_id: int, body: schemas.SourceIn, db: Session = Depends(
 
 @router.post("/{source_id}/test")
 def test_source(source_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Test that a source's path is readable from inside the container.
+
+    For file-based sources (local, smb, nfs): verifies the root directory
+    exists and lists files. Returns {ok, file_count} or {ok: false, detail}.
+    For cloud sources: verifies credentials are valid by listing the drive.
+    """
     # RLS hides other orgs' sources → 404
     source = db.get(Source, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     try:
-        connectors.get(source).test()
+        connector = connectors.get(source)
+        files = connector.list_files()
+        return {"ok": True, "file_count": len(files)}
     except Exception as exc:
         return {"ok": False, "detail": str(exc)}
-    return {"ok": True}
