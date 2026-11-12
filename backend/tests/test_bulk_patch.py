@@ -2,7 +2,7 @@
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 
 @pytest.fixture()
@@ -52,13 +52,7 @@ def test_bulk_file_into_box(bulk_setup):
 
 def test_bulk_set_category(bulk_setup):
     """Bulk-patch with project/type sets categorization without changing status."""
-    from models import Project, RecordType
-
     client = bulk_setup["client"]
-    db = bulk_setup["db"]
-    default_org_id = None
-    # Get the org_id from an existing record
-    rec_row = db.execute(select(text("SELECT org_id FROM records LIMIT 1"))).scalar()
 
     # Create a project and type via API (org-scoped)
     proj = client.post("/api/lookups/projects", json={"code": "BULK-P", "name": "Bulk Proj"}).json()

@@ -95,13 +95,17 @@ def test_restore_roundtrip(admin_client, org_db, default_org_id):
     assert r.status_code == 200, r.text
     assert r.json()["restored_from"] == backup["filename"]
 
-    # org_db is stale (its schema was dropped/recreated) — verify via owner
+    # org_db is stale (its schema was dropped/recreated) — verify via owner.
+    # The suite shares one session-scoped database, so other tests' rows may
+    # legitimately be present in the mid-test backup; assert on this test's
+    # own rows rather than the full set.
     with _owner_session() as s:
         from sqlalchemy import select
 
         rows = s.execute(select(Record)).scalars().all()
         names = {rec.name for rec in rows}
-        assert names == {"keep.pdf"}, f"restore did not roll back post-backup data: {names}"
+        assert "keep.pdf" in names, f"restore lost pre-backup data: {names}"
+        assert "drop.pdf" not in names, f"restore did not roll back post-backup data: {names}"
 
     # the restore itself is audited (on the restored schema)
     from sqlalchemy import text
@@ -183,7 +187,8 @@ def test_non_admin_forbidden(admin_client, default_org_id):
     # a regular (non-admin) user — v5 requires an org membership to log in
     r = admin_client.post("/api/admin/users", json={
         "username": "lifecycle-bob", "password": "bobpass123",
-        "full_name": "Bob", "role": "user",
+        "full_name": "Bob",
+        "role": "user",
         "org_id": default_org_id, "org_role": "member",
     })
     assert r.status_code == 200, r.text
