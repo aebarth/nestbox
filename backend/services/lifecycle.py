@@ -101,12 +101,14 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dict) -> None:
-    """Explicit audit_log entry for a lifecycle action (see module docstring).
+def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dict,
+           table_name: str = "lifecycle") -> None:
+    """Explicit audit_log entry for an install-level (org_id NULL) action.
 
-    Runs on the owner-role engine in its own transaction: lifecycle audit
-    rows are install-level (org_id NULL), which the audit_log RLS policy
-    does not permit nestbox_app to insert, and the caller's session may be
+    Used by lifecycle operations and org management (#10): those tables are
+    outside the trigger-based audit loop, and the audit_log RLS policy does
+    not permit nestbox_app to insert NULL-org rows — so the row is written on
+    the owner-role engine in its own transaction. The caller's session may be
     mid-rollback or stale during restore/reset.
 
     The detail is serialized to a JSON string here and cast with CAST():
@@ -114,6 +116,9 @@ def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dic
     `:name::jsonb` shorthand is NOT parsed as a bind parameter by SQLAlchemy
     2.0 (a name immediately followed by another colon renders literally), so
     an explicit CAST is required.
+
+    NOTE: audit_log.action only allows INSERT/UPDATE; removals are recorded
+    as UPDATE with op=remove_* in the detail.
     """
     from database import schema_engine
 
@@ -121,9 +126,9 @@ def _audit(db: Session, actor: str, action: str, row_pk: int | None, detail: dic
         conn.execute(
             text(
                 "INSERT INTO audit_log (username, table_name, row_pk, action, new_row, changed_cols) "
-                "VALUES (:u, 'lifecycle', :pk, :a, CAST(:d AS jsonb), '{}')"
+                "VALUES (:u, :t, :pk, :a, CAST(:d AS jsonb), '{}')"
             ),
-            {"u": actor, "pk": row_pk, "a": action, "d": json.dumps(detail)},
+            {"u": actor, "t": table_name, "pk": row_pk, "a": action, "d": json.dumps(detail)},
         )
 
 
@@ -272,7 +277,7 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     # would trigger a lazy-load against a missing table.
     backup_id_val = backup.id
     backup_filename = backup.filename
-    backup_sha256 = backup.sha256
+    backup_sha = backup.sha256
 
     verify_backup(backup)
 
@@ -316,10 +321,10 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     # on a fresh one so the record survives even though the old log was wiped.
     # _audit uses the owner-role engine directly (RLS-safe for NULL-org rows).
     _audit(db, actor_username, "UPDATE", backup_id_val, {
-        "op": "restore", "filename": backup_filename, "sha256": backup_sha256,
+        "op": "restore", "filename": backup_filename, "sha256": backup_sha,
     })
-    log.warning("Database restored from %s by %s", backup_filename, backup_sha256)
-    return {"restored_from": backup_filename, "sha256": backup_sha256}
+    log.warning("Database restored from %s by %s", backup_filename, backup_sha)
+    return {"restored_from": backup_filename, "sha256": backup_sha}
 
 
 def reset_database(db: Session, actor_username: str = "system") -> dict:
@@ -390,5 +395,5 @@ def prune_old_backups(db: Session, retention: int | None = None, actor_username:
         removed.append(row.filename)
     _audit(db, actor_username, "UPDATE", None, {"op": "prune", "removed": removed, "retention": retention})
     db.commit()
-    log.info("Pruned %d old backup(s): %s", len(removed), removed)
+    log.info("Pruned %d old backup(s): %s", len(removed), ", ".join(removed))
     return len(removed)
