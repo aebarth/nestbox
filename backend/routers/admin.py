@@ -222,12 +222,15 @@ def create_org(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    org = orgsvc.create_org_with_defaults(db, body.name, body.kind)
+    # The acting admin becomes owner — an org with zero members is unusable
+    # (no one can log into it). First-run setup does the same for its admin.
+    org = orgsvc.create_org_with_defaults(db, body.name, body.kind, owner_user_id=admin.id)
     audit_install_level(db, admin.username, "INSERT", org.id, {
         "op": "create_org", "name": org.name, "slug": org.slug, "kind": org.kind,
-    })
+        "owner_username": admin.username,
+    }, table_name="organizations")
     db.commit()
-    return _org_out(org, 0)
+    return _org_out(org, 1)
 
 
 @router.get("/orgs/{org_id}")
@@ -292,7 +295,7 @@ def update_org(
             "op": "update_org",
             "old": {k: v[0] for k, v in changed.items()},
             "new": {k: v[1] for k, v in changed.items()},
-        })
+        }, table_name="organizations")
         db.commit()
     return get_org(org_id, db)
 
@@ -322,7 +325,7 @@ def add_member(
     db.add(OrgMember(user_id=user.id, org_id=org_id, role=body.role))
     audit_install_level(db, admin.username, "INSERT", user.id, {
         "op": "add_member", "org_id": org_id, "username": user.username, "role": body.role,
-    })
+    }, table_name="org_members")
     db.commit()
     return {"user_id": user.id, "username": user.username, "role": body.role}
 
@@ -349,7 +352,7 @@ def update_member(
     audit_install_level(db, admin.username, "UPDATE", user_id, {
         "op": "change_member_role", "org_id": org_id, "username": username,
         "old_role": old_role, "new_role": body.role,
-    })
+    }, table_name="org_members")
     db.commit()
     return {"user_id": user_id, "role": body.role}
 
@@ -378,7 +381,7 @@ def remove_member(
     db.delete(m)
     audit_install_level(db, admin.username, "UPDATE", user_id, {
         "op": "remove_member", "org_id": org_id, "username": username, "role": m.role,
-    })
+    }, table_name="org_members")
     db.commit()
     return {"ok": True}
 
