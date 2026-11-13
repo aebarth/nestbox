@@ -222,12 +222,11 @@ def create_org(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    # The acting admin becomes owner — an org with zero members is unusable
-    # (no one can log into it). First-run setup does the same for its admin.
+    # The acting admin becomes owner of the new org — an org with no members
+    # is unusable (no one can log into it).
     org = orgsvc.create_org_with_defaults(db, body.name, body.kind, owner_user_id=admin.id)
     audit_install_level(db, admin.username, "INSERT", org.id, {
         "op": "create_org", "name": org.name, "slug": org.slug, "kind": org.kind,
-        "owner_username": admin.username,
     }, table_name="organizations")
     db.commit()
     return _org_out(org, 1)

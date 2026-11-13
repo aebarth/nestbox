@@ -1,19 +1,14 @@
 """Organization management API tests (#10): org CRUD + member management.
 
-organizations / org_members are install-level tables (no RLS), so these
-tests exercise the admin API directly and verify per-org starter data via
-a session scoped to the new org.
-
-Note: the suite shares one session database, so earlier tests (including
-other files) may leave extra orgs/users behind. Tests that depend on the
-*set* of active orgs isolate their scenario explicitly and restore state
-in `finally` so a failure cannot pollute later tests.
+organizations / org_members are install-level tables (no RLS) and outside the
+trigger-based audit loop, so these tests exercise the admin API directly and
+verify per-org starter data through a session scoped to the new org.
 """
 import pytest
 from sqlalchemy import select
 
 
-def _create_org(client, name="Test Org", kind="personal"):
+def _create_org(client, name: str, kind: str = "personal") -> dict:
     r = client.post("/api/admin/orgs", json={"name": name, "kind": kind})
     assert r.status_code == 201, r.text
     return r.json()
@@ -24,6 +19,7 @@ def test_list_orgs_includes_default(admin_client, default_org_id):
     match = [o for o in orgs if o["id"] == default_org_id]
     assert len(match) == 1
     assert match[0]["member_count"] >= 1
+    assert match[0]["is_active"] is True
 
 
 def test_create_org_creates_starter_defaults(admin_client, db_session):
@@ -31,18 +27,18 @@ def test_create_org_creates_starter_defaults(admin_client, db_session):
     from models import RecordType, Source
 
     org = _create_org(admin_client, name="Defaults Org")
+    assert org["slug"] == "defaults-org"
+    # the acting admin is added as owner — an org with no members is unusable
+    assert org["member_count"] == 1
 
-    # the acting admin becomes owner (an org with no members is unusable)
-    detail = admin_client.get(f"/api/admin/orgs/{org['id']}").json()
-    assert any(m["username"] == "admin" and m["role"] == "owner" for m in detail["members"])
-
-    # per-org starter data, read through a session scoped to the NEW org
+    # Read the new org's starter data through an RLS-scoped session.
     set_org_context(db_session, "admin", 1, org["id"])
     db_session.expire_all()
     types = db_session.execute(select(RecordType)).scalars().all()
     assert {t.code for t in types} == {"DHR", "DMR", "TRN", "CAL", "SUP", "CAPA", "GEN"}
-
-    inbox = db_session.execute(select(Source).where(Source.name == "Scan Inbox")).scalars().all()
+    inbox = db_session.execute(
+        select(Source).where(Source.name == "Scan Inbox")
+    ).scalars().all()
     assert len(inbox) == 1
     assert inbox[0].config.get("builtin_inbox") is True
 
@@ -72,28 +68,30 @@ def test_update_org_and_last_active_guard(admin_client, default_org_id):
     # slug is stable across renames (it identifies the org's file subtree)
     assert r.json()["slug"] == org["slug"]
 
-    # Other tests in this shared suite leave extra active orgs behind;
-    # deactivate them so exactly {default, Guard} remain active.
+    # The last-active guard is install-wide, and earlier tests in this shared
+    # session DB have created other active orgs — deactivate every active org
+    # except the default so the guard is actually reachable.
+    all_orgs = admin_client.get("/api/admin/orgs").json()
     others = [
-        o for o in admin_client.get("/api/admin/orgs").json()
-        if o["is_active"] and o["id"] not in (default_org_id, org["id"])
+        o for o in all_orgs
+        if o["id"] not in (default_org_id, org["id"]) and o["is_active"]
     ]
+    for o in others:
+        r = admin_client.patch(f"/api/admin/orgs/{o['id']}", json={"is_active": False})
+        assert r.status_code == 200, r.text
     try:
-        for o in others:
-            r = admin_client.patch(f"/api/admin/orgs/{o['id']}", json={"is_active": False})
-            assert r.status_code == 200, r.text
-
-        # deactivating Guard is fine — the default stays active
+        # deactivating the new org leaves exactly one active (the default)
         r = admin_client.patch(f"/api/admin/orgs/{org['id']}", json={"is_active": False})
         assert r.status_code == 200, r.text
-
-        # now the default is the LAST active org → refusal
+        # deactivating the LAST active org is refused
         r = admin_client.patch(f"/api/admin/orgs/{default_org_id}", json={"is_active": False})
         assert r.status_code == 422, r.text
     finally:
-        # restore every org to active so later tests see a normal install
-        for oid in {default_org_id, org["id"], *(o["id"] for o in others)}:
-            admin_client.patch(f"/api/admin/orgs/{oid}", json={"is_active": True})
+        # restore state for the rest of the suite regardless of outcome
+        admin_client.patch(f"/api/admin/orgs/{default_org_id}", json={"is_active": True})
+        admin_client.patch(f"/api/admin/orgs/{org['id']}", json={"is_active": True})
+        for o in others:
+            admin_client.patch(f"/api/admin/orgs/{o['id']}", json={"is_active": True})
 
 
 def test_member_lifecycle(admin_client, default_org_id):
@@ -127,6 +125,7 @@ def test_member_lifecycle(admin_client, default_org_id):
 
     detail = admin_client.get(f"/api/admin/orgs/{oid}").json()
     admin_member = next(m for m in detail["members"] if m["username"] == "admin")
+    assert admin_member["role"] == "owner"
 
     # demoting the original owner is allowed while carol remains an owner
     r = admin_client.patch(
@@ -138,10 +137,8 @@ def test_member_lifecycle(admin_client, default_org_id):
     r = admin_client.delete(f"/api/admin/orgs/{oid}/members/{carol_id}")
     assert r.status_code == 422, r.text
 
-    # self-removal refused (on the default org, where admin is still owner)
-    r = admin_client.delete(
-        f"/api/admin/orgs/{default_org_id}/members/{admin_member['user_id']}"
-    )
+    # self-removal refused (default org, where admin is still owner)
+    r = admin_client.delete(f"/api/admin/orgs/{default_org_id}/members/{admin_member['user_id']}")
     assert r.status_code == 422, r.text
 
 
@@ -167,7 +164,7 @@ def test_org_admin_endpoints_require_install_admin(admin_client, default_org_id)
 
     from main import app
 
-    # a regular member (not an install admin) is locked out of org management
+    # a regular (non-admin) user — org member, not install admin
     r = admin_client.post("/api/admin/users", json={
         "username": "org-bob", "password": "bobpass123",
         "full_name": "Bob", "role": "user",
