@@ -89,18 +89,49 @@ def client(database):
         yield c
 
 
+def _default_org_id() -> int:
+    """The first-created organization — the suite's canonical "default" org.
+
+    Matches the `default_org_id` fixture so an API-scoped session and a raw
+    ORM session agree on which org is "the default".
+    """
+    from sqlalchemy import text
+
+    from database import SessionLocal
+
+    with SessionLocal() as s:
+        return s.execute(text(
+            "SELECT id FROM organizations ORDER BY created_at LIMIT 1"
+        )).scalar_one()
+
+
 @pytest.fixture()
 def admin_client(client, database):
-    """Logged-in admin client (creates the account on first use)."""
+    """Logged-in admin client scoped to the default org (created on first use).
+
+    The suite shares one session-scoped database. The org-admin tests make the
+    acting install-admin an *owner* of every organization they create, so by
+    the time later test files run the `admin` account belongs to several orgs.
+    A multi-org login therefore returns a short-lived PENDING token with no
+    `org_id` claim, which org-scoped endpoints reject with 403 "No
+    organization selected". When that happens we resolve it exactly as the
+    frontend does — pick the default (first-created) org via /select-org — so
+    every test gets a deterministic, fully-scoped admin session on the default
+    org. Single-org logins auto-select and skip this step entirely.
+    """
     status = client.get("/api/auth/status").json()
     if status["needs_setup"]:
         r = client.post("/api/auth/setup", json={
             "username": "admin", "password": "adminpass1", "full_name": "Test Admin",
         })
         assert r.status_code == 200, r.text
-    else:
-        r = client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
-        assert r.status_code == 200, r.text
+        return client
+
+    r = client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
+    assert r.status_code == 200, r.text
+    if r.json().get("needs_org_selection"):
+        sel = client.post("/api/auth/select-org", json={"org_id": _default_org_id()})
+        assert sel.status_code == 200, sel.text
     return client
 
 

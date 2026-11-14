@@ -19,6 +19,9 @@ def test_login_lockout_after_failures(admin_client, db_session):
 
 
 def test_record_lifecycle_is_admin_only(admin_client, org_db, default_org_id):
+    from fastapi.testclient import TestClient
+
+    from main import app
     from models import Record, Source
     from sqlalchemy import select
 
@@ -31,18 +34,23 @@ def test_record_lifecycle_is_admin_only(admin_client, org_db, default_org_id):
     org_db.commit()
 
     # v5: plainuser gets a membership (required to log in) but only the
-    # 'member' org role — lifecycle changes need owner/admin
+    # 'member' org role — lifecycle changes need owner/admin. Use a separate
+    # client for the member attempt so we don't clobber admin_client's
+    # default-org-scoped session (a multi-org admin re-login would otherwise
+    # hand us a pending token with no org claim).
     admin_client.post("/api/admin/users", json={
         "username": "plainuser", "password": "plainpass1", "role": "user",
         "org_id": default_org_id, "org_role": "member",
     })
-    admin_client.post("/api/auth/login",
-                      json={"username": "plainuser", "password": "plainpass1"})
-    r = admin_client.post(f"/api/records/{rec.id}/status",
-                          json={"status": "retired", "reason": "should fail"})
-    assert r.status_code == 403
 
-    admin_client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
+    with TestClient(app) as plain:
+        login = plain.post("/api/auth/login", json={"username": "plainuser", "password": "plainpass1"})
+        assert login.status_code == 200, login.text
+        r = plain.post(f"/api/records/{rec.id}/status",
+                       json={"status": "retired", "reason": "should fail"})
+        assert r.status_code == 403
+
+    # admin_client is already scoped to the default org by the fixture
     r = admin_client.post(f"/api/records/{rec.id}/status",
                           json={"status": "retired", "reason": "admin ok"})
     assert r.status_code == 200

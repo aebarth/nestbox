@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 import schemas
 from database import get_db, set_actor
-from models import Organization, OrgMember, RecordType, Source, User
+from models import Organization, OrgMember, User
 from security import (
     COOKIE_NAME,
     SECRET_KEY,
@@ -23,6 +23,7 @@ from security import (
     record_login_success,
     verify_password,
 )
+from services.organizations import create_org_with_defaults
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -56,27 +57,6 @@ class LoginOut(BaseModel):
     user: schemas.UserOut | None = None
 
 
-def _create_org_defaults(db: Session, org_id: int) -> None:
-    """Insert per-org starter data when a new org is created."""
-    from sqlalchemy import text
-    db.execute(text("SET LOCAL app.org_id = :oid"), {"oid": str(org_id)})
-    # Default record types (same as old global seed)
-    defaults = [
-        ("DHR", "Device History Record", None),
-        ("DMR", "Device Master Record", None),
-        ("TRN", "Training Record", 5),
-        ("CAL", "Calibration Record", 5),
-        ("SUP", "Supplier Record", 7),
-        ("CAPA", "CAPA Record", 7),
-        ("GEN", "General Document", None),
-    ]
-    for code, name, retention in defaults:
-        db.add(RecordType(org_id=org_id, code=code, name=name, retention_years=retention))
-    # Built-in scan inbox source
-    db.add(Source(org_id=org_id, name="Scan Inbox", kind="local",
-                  config={"root": "/inbox", "builtin_inbox": True}, is_monitored=True))
-
-
 @router.get("/status")
 def status(db: Session = Depends(get_db)):
     """First-run detection: the frontend shows Setup until an admin exists."""
@@ -93,13 +73,8 @@ def setup(body: SetupIn, response: Response, db: Session = Depends(get_db)):
 
     set_actor(db, body.username)
 
-    # Create the organization
-    slug = body.org_name.lower().replace(" ", "-")[:32] or "default"
-    org = Organization(name=body.org_name, slug=slug, kind=body.org_kind)
-    db.add(org)
-    db.flush()  # get org.id
-
-    # Create the admin user
+    # Create the admin user first so the org service can record the owner
+    # membership in the same transaction.
     user = User(
         username=body.username,
         password_hash=hash_password(body.password),
@@ -110,11 +85,7 @@ def setup(body: SetupIn, response: Response, db: Session = Depends(get_db)):
     db.add(user)
     db.flush()  # get user.id
 
-    # Create membership (owner)
-    db.add(OrgMember(user_id=user.id, org_id=org.id, role="owner"))
-
-    # Create per-org starter defaults
-    _create_org_defaults(db, org.id)
+    org = create_org_with_defaults(db, body.org_name, body.org_kind, owner_user_id=user.id)
 
     db.commit()
     issue_token(response, user.username, org_id=org.id, org_role="owner")
