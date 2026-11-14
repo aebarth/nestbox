@@ -57,6 +57,17 @@ class LoginOut(BaseModel):
     user: schemas.UserOut | None = None
 
 
+class OrgListOut(BaseModel):
+    """The caller's active org memberships + which one is currently selected.
+
+    `current` mirrors the token's org claim (null while holding a pending
+    pre-selection token); `orgs` lists every active membership so the client
+    can render either the login picker or the header switcher.
+    """
+    current: OrgOut | None = None
+    orgs: list[OrgOut] = []
+
+
 @router.get("/status")
 def status(db: Session = Depends(get_db)):
     """First-run detection: the frontend shows Setup until an admin exists."""
@@ -182,6 +193,37 @@ def select_org(body: SelectOrgIn, request: Request, response: Response,
         orgs=[OrgOut(id=org.id, name=org.name, kind=org.kind, role=membership.role)],
         user=user,
     )
+
+
+@router.get("/orgs", response_model=OrgListOut)
+def my_orgs(request: Request, db: Session = Depends(get_db),
+            user: User = Depends(get_current_user)):
+    """The caller's active org memberships and which one is currently selected.
+
+    Powers the login picker and the header org switcher. Works with either a
+    full token (`current` set) or a short-lived pending token (`current` null,
+    `orgs` still populated so the client can render the picker). Returns 401
+    when there is no valid session at all.
+    """
+    current_org_id = None
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        try:
+            current_org_id = pyjwt.decode(token, SECRET_KEY, algorithms=["HS256"]).get("org_id")
+        except pyjwt.PyJWTError:
+            pass
+
+    memberships = db.execute(
+        select(OrgMember, Organization).join(
+            Organization, OrgMember.org_id == Organization.id
+        ).where(
+            OrgMember.user_id == user.id,
+            Organization.is_active == True,  # noqa: E712
+        )
+    ).all()
+    orgs = [OrgOut(id=o.id, name=o.name, kind=o.kind, role=m.role) for m, o in memberships]
+    current = next((o for o in orgs if o.id == current_org_id), None)
+    return OrgListOut(current=current, orgs=orgs)
 
 
 @router.post("/logout")
