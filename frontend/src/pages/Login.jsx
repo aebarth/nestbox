@@ -7,7 +7,7 @@ import { api } from '../services/api.js'
 export default function Login({ needsSetup }) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const [form, setForm] = useState({ username: '', password: '', full_name: '', org_name: '' })
+  const [form, setForm] = useState({ username: '', password: '', full_name: '', org_name: '', org_kind: 'personal' })
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
 
@@ -46,6 +46,12 @@ export default function Login({ needsSetup }) {
               <Field label="Organization name">
                 <input className="input" value={form.org_name} onChange={set('org_name')}
                        placeholder="Acme Medical Devices" />
+              </Field>
+              <Field label="Organization type">
+                <select className="input" value={form.org_kind} onChange={set('org_kind')}>
+                  <option value="personal">Personal</option>
+                  <option value="business">Business</option>
+                </select>
               </Field>
               <Field label="Your name">
                 <input className="input" value={form.full_name} onChange={set('full_name')} />
