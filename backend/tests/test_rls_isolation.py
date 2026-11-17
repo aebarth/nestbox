@@ -181,6 +181,12 @@ def test_multi_org_login_and_select_org(admin_client, org_b):
         # without an org selected, org-scoped endpoints refuse the pending token
         assert c.get("/api/lookups/projects").status_code == 403
 
+        # /orgs works even with the pending token: current is null but the full
+        # membership list is returned so the client can render the picker
+        pending = c.get("/api/auth/orgs").json()
+        assert pending["current"] is None
+        assert {o["id"] for o in pending["orgs"]} == {org_a_id, org_b}
+
         # exchange the pending token for org B → see only B's data
         r = c.post("/api/auth/select-org", json={"org_id": org_b})
         assert r.status_code == 200, r.text
@@ -188,8 +194,22 @@ def test_multi_org_login_and_select_org(admin_client, org_b):
         codes = {p["code"] for p in c.get("/api/lookups/projects").json()}
         assert "DUAL-B" in codes and "DUAL-A" not in codes
 
+        # /orgs now reports org B as current, with the full list intact
+        after_b = c.get("/api/auth/orgs").json()
+        assert after_b["current"]["id"] == org_b
+        assert {o["id"] for o in after_b["orgs"]} == {org_a_id, org_b}
+
         # switch to org A → see only A's data
         r = c.post("/api/auth/select-org", json={"org_id": org_a_id})
         assert r.status_code == 200, r.text
         codes = {p["code"] for p in c.get("/api/lookups/projects").json()}
         assert "DUAL-A" in codes and "DUAL-B" not in codes
+
+        # and /orgs reflects the switch
+        after_a = c.get("/api/auth/orgs").json()
+        assert after_a["current"]["id"] == org_a_id
+
+
+def test_my_orgs_requires_auth(client):
+    """A logged-out caller gets 401 from /orgs (no session to introspect)."""
+    assert client.get("/api/auth/orgs").status_code == 401

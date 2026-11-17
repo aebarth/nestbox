@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
   Bell,
+  Building2,
   Database as DatabaseIcon,
   FileText,
   Inbox as InboxIcon,
@@ -14,6 +15,7 @@ import {
   Wand2,
 } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
+import { useToast } from '../components/ui.jsx'
 import { api } from '../services/api.js'
 
 const NAV = [
@@ -28,17 +30,41 @@ const NAV = [
 
 export default function Layout({ user, children }) {
   const queryClient = useQueryClient()
+  const toast = useToast()
   const alerts = useQuery({
     queryKey: ['alerts', 'open-count'],
     queryFn: () => api.get('/api/alerts?status=unresolved&limit=500'),
     refetchInterval: 60_000,
+  })
+  // Shared with App's gate (same cache key): the active org + every org this
+  // user belongs to. Drives the switcher below.
+  const orgs = useQuery({
+    queryKey: ['my-orgs'],
+    queryFn: () => api.get('/api/auth/orgs'),
+    retry: false,
   })
   const openCount = alerts.data?.length || 0
 
   async function logout() {
     await api.post('/api/auth/logout')
     queryClient.setQueryData(['me'], null)
+    queryClient.invalidateQueries()
   }
+
+  async function switchOrg(e) {
+    const id = Number(e.target.value)
+    try {
+      await api.post('/api/auth/select-org', { org_id: id })
+      // Every query is org-scoped — drop the cache so nothing from the old
+      // workspace lingers, then let React Query refetch against the new token.
+      await queryClient.invalidateQueries()
+    } catch (err) {
+      toast(err.message, 'error')
+    }
+  }
+
+  const currentOrg = orgs.data?.current
+  const showSwitcher = orgs.data && orgs.data.orgs.length > 1
 
   return (
     <div className="flex min-h-screen">
@@ -50,7 +76,22 @@ export default function Layout({ user, children }) {
             <div className="text-[11px] text-slate-400">Records, tracked & boxed</div>
           </div>
         </div>
-        <nav className="flex-1 space-y-1 px-3 py-2">
+
+        {showSwitcher && (
+          <div className="px-3 pb-2">
+            <select value={currentOrg?.id ?? ''} onChange={switchOrg} aria-label="Switch organization"
+                    className="w-full cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-amber-400 focus:outline-none">
+              {orgs.data.orgs.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+            {currentOrg && (
+              <div className="mt-1 px-1 text-[11px] capitalize text-slate-500">{currentOrg.kind} workspace</div>
+            )}
+          </div>
+        )}
+
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {NAV.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
@@ -82,6 +123,19 @@ export default function Layout({ user, children }) {
             >
               <Wand2 size={17} />
               Auto-categorize
+            </NavLink>
+          )}
+          {user.role === 'admin' && (
+            <NavLink
+              to="/admin/orgs"
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <Building2 size={17} />
+              Organizations
             </NavLink>
           )}
           {user.role === 'admin' && (
