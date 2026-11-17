@@ -76,6 +76,10 @@ describe('Inbox (review queue)', () => {
   })
 
   it('bulk-select then file into a box posts bulk-patch with ids + box_id', async () => {
+    api.post.mockImplementation((path) => {
+      if (path === '/api/records/bulk-patch') return Promise.resolve({ updated: 2, errors: [] })
+      return Promise.resolve({})
+    })
     renderInbox()
     await screen.findByText('scan-001.pdf')
 

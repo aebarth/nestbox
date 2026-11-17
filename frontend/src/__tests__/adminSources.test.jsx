@@ -70,8 +70,7 @@ describe('Admin → Sources', () => {
     await openSourcesTab()
 
     fireEvent.click(screen.getByRole('button', { name: /add source/i }))
-    const nameInput = await screen.findByDisplayValue('')
-    // the modal's inputs: Name, Folder (placeholder), cron — set name + root
+    // the modal's inputs render synchronously: Name, Folder (placeholder), cron
     const inputs = Array.from(document.querySelectorAll('input.input'))
     fireEvent.change(inputs[0], { target: { value: 'Canon R50' } })
     fireEvent.change(screen.getByPlaceholderText('/sources/…'), { target: { value: '/sources/canon-r50' } })
