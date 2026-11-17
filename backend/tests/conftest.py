@@ -8,6 +8,11 @@ roles. The app engine connects as nestbox_app so RLS is genuinely exercised
 nestbox_admin (BYPASSRLS) for cross-org operations. Schema management
 (apply_migrations in the app lifespan) runs as the server role, since
 migrations do DDL that nestbox_app may not.
+
+Upgrade path (#10): NESTBOX_TEST_INIT_DIR points the database fixture at a
+different schema snapshot (CI's backend-tests-upgraded job uses
+db-init/legacy-v4 — a pre-multi-org install with data), after which the
+explicit apply_migrations() call below performs the real v4 → v5 upgrade.
 """
 import os
 from pathlib import Path
@@ -42,7 +47,14 @@ os.environ["WORKER_DB_URL"] = TEST_WORKER_URL
 os.environ["SCHEMA_DB_URL"] = TEST_SERVER_URL
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
-DB_INIT = Path(__file__).resolve().parents[2] / "db-init"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Schema snapshot used to build the test database. Defaults to the current
+# fresh-install DDL (db-init/, v5). CI's backend-tests-upgraded job points
+# this at db-init/legacy-v4 so the suite runs against an upgraded schema.
+_init_override = os.environ.get("NESTBOX_TEST_INIT_DIR", "").strip()
+INIT_DIR = REPO_ROOT / _init_override if _init_override else REPO_ROOT / "db-init"
+UPGRADE_PATH = "legacy-v4" in _init_override
 
 
 @pytest.fixture(scope="session")
@@ -67,12 +79,21 @@ def database():
     raw = init_engine.raw_connection()
     try:
         cur = raw.cursor()
-        for sql_file in sorted(DB_INIT.glob("*.sql")):
+        for sql_file in sorted(INIT_DIR.glob("*.sql")):
             cur.execute(sql_file.read_text())
         raw.commit()
     finally:
         raw.close()
     init_engine.dispose()
+
+    # Apply pending migrations as the owner role, now, instead of relying on
+    # the first TestClient's lifespan: on the upgrade path this is what runs
+    # 005/006 against the legacy snapshot, and every fixture then sees a
+    # deterministic schema state. On the fresh path this applies 006 (db-init
+    # records versions 1-5) — same as the lifespan would have.
+    from database import apply_migrations
+
+    apply_migrations()
 
     from database import engine
 
@@ -105,6 +126,34 @@ def _default_org_id() -> int:
         )).scalar_one()
 
 
+def _grant_admin_default_org_ownership() -> None:
+    """Upgrade path only: make the suite's admin an owner of the org the
+    migration backfilled legacy data into.
+
+    On a fresh install the first-created org is the one setup makes for the
+    admin, so every fixture agrees on "the default" org. On the upgrade path
+    the migration creates the 'default' org (holding all legacy rows) before
+    any user exists, and setup then gives the admin a *second* org — leaving
+    org_db (first-created org) and admin_client (setup org) scoped to
+    different orgs. A real v4 install would have had its pre-existing users
+    backfilled as owners of the default org; this reproduces that for the
+    test admin. Idempotent; no-ops when the user or org doesn't exist yet
+    (e.g. right after a lifecycle reset rebuilt from the fresh snapshot).
+    """
+    from sqlalchemy import text
+
+    from database import schema_engine
+
+    with schema_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO org_members (user_id, org_id, role) "
+            "SELECT u.id, o.id, 'owner' "
+            "FROM users u CROSS JOIN organizations o "
+            "WHERE u.username = 'admin' AND o.slug = 'default' "
+            "ON CONFLICT (user_id, org_id) DO NOTHING"
+        ))
+
+
 @pytest.fixture()
 def admin_client(client, database):
     """Logged-in admin client scoped to the default org (created on first use).
@@ -118,6 +167,11 @@ def admin_client(client, database):
     frontend does — pick the default (first-created) org via /select-org — so
     every test gets a deterministic, fully-scoped admin session on the default
     org. Single-org logins auto-select and skip this step entirely.
+
+    Upgrade path: after setup (which creates the admin in a fresh org), the
+    admin is also made an owner of the migration-created 'default' org — see
+    _grant_admin_default_org_ownership — so the session scopes to it, keeping
+    admin_client and org_db on the same org.
     """
     status = client.get("/api/auth/status").json()
     if status["needs_setup"]:
@@ -125,7 +179,11 @@ def admin_client(client, database):
             "username": "admin", "password": "adminpass1", "full_name": "Test Admin",
         })
         assert r.status_code == 200, r.text
-        return client
+        if not UPGRADE_PATH:
+            return client
+
+    if UPGRADE_PATH:
+        _grant_admin_default_org_ownership()
 
     r = client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
     assert r.status_code == 200, r.text

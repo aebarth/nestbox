@@ -1,0 +1,3 @@
+-- LEGACY v4 SNAPSHOT (upgrade rehearsal only — see README.md).
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;

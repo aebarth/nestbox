@@ -26,7 +26,7 @@ jobs:
       # postgresql-client = pg_dump/pg_restore for the lifecycle tests
       - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr poppler-utils postgresql-client
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: pip
@@ -39,6 +39,40 @@ jobs:
       - run: pytest backend -v --timeout=180
         env:
           DATABASE_URL: postgresql+psycopg2://nestbox:nestbox@localhost:5432/nestbox
+
+  backend-tests-upgraded:
+    # v4 → v5 upgrade rehearsal (#10): builds the test DB from the legacy-v4
+    # snapshot (a pre-multi-org install carrying data), the app's startup
+    # migration run applies 005/006, then the full suite — RLS isolation
+    # matrix included — runs against the upgraded schema.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nestbox
+          POSTGRES_PASSWORD: nestbox
+          POSTGRES_DB: nestbox
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nestbox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      # postgresql-client = pg_dump/pg_restore for the lifecycle tests
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr poppler-utils postgresql-client
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt pytest httpx pytest-timeout
+      - run: pytest backend -v --timeout=180
+        env:
+          DATABASE_URL: postgresql+psycopg2://nestbox:nestbox@localhost:5432/nestbox
+          NESTBOX_TEST_INIT_DIR: db-init/legacy-v4
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -68,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install pip-audit && pip-audit -r backend/requirements.txt --no-deps
