@@ -19,9 +19,11 @@ def orgadmin_client(admin_client, default_org_id):
     """A TestClient logged in as `orgadmin` — a dedicated install-admin that
     absorbs this file's scratch-org ownership instead of the shared admin.
 
-    Created once (409 on later tests in this file). Member of the default org
-    only, so its own login is a plain single-org auto-select — no picker
-    resolution involved.
+    Created once (409 on later tests in this file). From the second test on it
+    owns several scratch orgs (that is its job), so its login goes through the
+    multi-org picker; the fixture resolves it deterministically to the default
+    org. This is fine — #17's invariant is that the SHARED `admin` account
+    stays single-org, not that orgadmin does.
     """
     from fastapi.testclient import TestClient
 
@@ -37,8 +39,9 @@ def orgadmin_client(admin_client, default_org_id):
     with TestClient(app) as c:
         login = c.post("/api/auth/login", json={"username": "orgadmin", "password": "orgadminpass123"})
         assert login.status_code == 200, login.text
-        assert login.json().get("needs_org_selection") is False, \
-            "orgadmin must belong to exactly one org (the default)"
+        if login.json().get("needs_org_selection"):
+            sel = c.post("/api/auth/select-org", json={"org_id": default_org_id})
+            assert sel.status_code == 200, sel.text
         yield c
 
 
