@@ -54,6 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # this at db-init/legacy-v4 so the suite runs against an upgraded schema.
 _init_override = os.environ.get("NESTBOX_TEST_INIT_DIR", "").strip()
 INIT_DIR = REPO_ROOT / _init_override if _init_override else REPO_ROOT / "db-init"
+UPGRADE_PATH = "legacy-v4" in _init_override
 
 
 @pytest.fixture(scope="session")
@@ -125,6 +126,34 @@ def _default_org_id() -> int:
         )).scalar_one()
 
 
+def _grant_admin_default_org_ownership() -> None:
+    """Upgrade path only: make the suite's admin an owner of the org the
+    migration backfilled legacy data into.
+
+    On a fresh install the first-created org is the one setup makes for the
+    admin, so every fixture agrees on "the default" org. On the upgrade path
+    the migration creates the 'default' org (holding all legacy rows) before
+    any user exists, and setup then gives the admin a *second* org — leaving
+    org_db (first-created org) and admin_client (setup org) scoped to
+    different orgs. A real v4 install would have had its pre-existing users
+    backfilled as owners of the default org; this reproduces that for the
+    test admin. Idempotent; no-ops when the user or org doesn't exist yet
+    (e.g. right after a lifecycle reset rebuilt from the fresh snapshot).
+    """
+    from sqlalchemy import text
+
+    from database import schema_engine
+
+    with schema_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO org_members (user_id, org_id, role) "
+            "SELECT u.id, o.id, 'owner' "
+            "FROM users u CROSS JOIN organizations o "
+            "WHERE u.username = 'admin' AND o.slug = 'default' "
+            "ON CONFLICT (user_id, org_id) DO NOTHING"
+        ))
+
+
 @pytest.fixture()
 def admin_client(client, database):
     """Logged-in admin client scoped to the default org (created on first use).
@@ -138,6 +167,11 @@ def admin_client(client, database):
     frontend does — pick the default (first-created) org via /select-org — so
     every test gets a deterministic, fully-scoped admin session on the default
     org. Single-org logins auto-select and skip this step entirely.
+
+    Upgrade path: after setup (which creates the admin in a fresh org), the
+    admin is also made an owner of the migration-created 'default' org — see
+    _grant_admin_default_org_ownership — so the session scopes to it, keeping
+    admin_client and org_db on the same org.
     """
     status = client.get("/api/auth/status").json()
     if status["needs_setup"]:
@@ -145,7 +179,11 @@ def admin_client(client, database):
             "username": "admin", "password": "adminpass1", "full_name": "Test Admin",
         })
         assert r.status_code == 200, r.text
-        return client
+        if not UPGRADE_PATH:
+            return client
+
+    if UPGRADE_PATH:
+        _grant_admin_default_org_ownership()
 
     r = client.post("/api/auth/login", json={"username": "admin", "password": "adminpass1"})
     assert r.status_code == 200, r.text
