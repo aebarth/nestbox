@@ -8,6 +8,11 @@ roles. The app engine connects as nestbox_app so RLS is genuinely exercised
 nestbox_admin (BYPASSRLS) for cross-org operations. Schema management
 (apply_migrations in the app lifespan) runs as the server role, since
 migrations do DDL that nestbox_app may not.
+
+Upgrade path (#10): NESTBOX_TEST_INIT_DIR points the database fixture at a
+different schema snapshot (CI's backend-tests-upgraded job uses
+db-init/legacy-v4 — a pre-multi-org install with data), after which the
+explicit apply_migrations() call below performs the real v4 → v5 upgrade.
 """
 import os
 from pathlib import Path
@@ -42,7 +47,13 @@ os.environ["WORKER_DB_URL"] = TEST_WORKER_URL
 os.environ["SCHEMA_DB_URL"] = TEST_SERVER_URL
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
-DB_INIT = Path(__file__).resolve().parents[2] / "db-init"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Schema snapshot used to build the test database. Defaults to the current
+# fresh-install DDL (db-init/, v5). CI's backend-tests-upgraded job points
+# this at db-init/legacy-v4 so the suite runs against an upgraded schema.
+_init_override = os.environ.get("NESTBOX_TEST_INIT_DIR", "").strip()
+INIT_DIR = REPO_ROOT / _init_override if _init_override else REPO_ROOT / "db-init"
 
 
 @pytest.fixture(scope="session")
@@ -67,12 +78,21 @@ def database():
     raw = init_engine.raw_connection()
     try:
         cur = raw.cursor()
-        for sql_file in sorted(DB_INIT.glob("*.sql")):
+        for sql_file in sorted(INIT_DIR.glob("*.sql")):
             cur.execute(sql_file.read_text())
         raw.commit()
     finally:
         raw.close()
     init_engine.dispose()
+
+    # Apply pending migrations as the owner role, now, instead of relying on
+    # the first TestClient's lifespan: on the upgrade path this is what runs
+    # 005/006 against the legacy snapshot, and every fixture then sees a
+    # deterministic schema state. On the fresh path this applies 006 (db-init
+    # records versions 1-5) — same as the lifespan would have.
+    from database import apply_migrations
+
+    apply_migrations()
 
     from database import engine
 
