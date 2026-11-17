@@ -151,8 +151,9 @@ CREATE UNIQUE INDEX records_org_source_path_live_uq
 INSERT INTO org_settings (org_id, key, value)
 SELECT o.id, s.key, s.value
 FROM settings s
-CROSS JOIN organizations o WHERE o.slug = 'default'
-WHERE s.key IN ('schedule_cron', 'integrity_cron', 'label_default_format');
+CROSS JOIN organizations o
+WHERE o.slug = 'default'
+  AND s.key IN ('schedule_cron', 'integrity_cron', 'label_default_format');
 
 -- ============================================================================
 -- 6. Indexes for RLS performance
