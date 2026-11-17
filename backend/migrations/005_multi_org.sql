@@ -6,8 +6,14 @@
 --
 -- Runs as the existing table-owner role (nestbox superuser in default
 -- installs). Safe to run once; guarded by schema_version like all migrations.
-
-BEGIN;
+--
+-- NOTE: Do NOT include BEGIN/COMMIT or INSERT INTO schema_version here.
+-- The migration runner (database.py::apply_migrations) manages the
+-- transaction and records the version itself. An earlier revision of this
+-- file shipped its own BEGIN/COMMIT plus its own version insert; executed
+-- through the runner, the embedded COMMIT ended the runner's transaction
+-- and the runner's bookkeeping insert then violated schema_version_pkey
+-- (duplicate row 5). Caught by CI's backend-tests-upgraded job.
 
 -- ============================================================================
 -- 1. New tables
@@ -282,10 +288,4 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- 11. Bump schema version
--- ============================================================================
-
-INSERT INTO schema_version (version) VALUES (5);
-
-COMMIT;
+-- Version bump: handled by the migration runner (see header note).
