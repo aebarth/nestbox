@@ -158,15 +158,18 @@ def _grant_admin_default_org_ownership() -> None:
 def admin_client(client, database):
     """Logged-in admin client scoped to the default org (created on first use).
 
-    The suite shares one session-scoped database. The org-admin tests make the
-    acting install-admin an *owner* of every organization they create, so by
-    the time later test files run the `admin` account belongs to several orgs.
-    A multi-org login therefore returns a short-lived PENDING token with no
-    `org_id` claim, which org-scoped endpoints reject with 403 "No
-    organization selected". When that happens we resolve it exactly as the
-    frontend does — pick the default (first-created) org via /select-org — so
-    every test gets a deterministic, fully-scoped admin session on the default
-    org. Single-org logins auto-select and skip this step entirely.
+    The suite shares one session-scoped database. A multi-org login returns a
+    short-lived PENDING token with no `org_id` claim, which org-scoped
+    endpoints reject with 403 "No organization selected". When that happens we
+    resolve it exactly as the frontend does — pick the default (first-created)
+    org via /select-org — so every test gets a deterministic, fully-scoped
+    admin session on the default org. Single-org logins auto-select and skip
+    this step entirely.
+
+    Since #17 the org-admin tests use their own install-admin (`orgadmin`), so
+    on the fresh path `admin` stays single-org and the picker resolution is
+    defense-in-depth; on the upgrade path admin genuinely has two orgs (the
+    setup org + the migration's default org) and it is load-bearing.
 
     Upgrade path: after setup (which creates the admin in a fresh org), the
     admin is also made an owner of the migration-created 'default' org — see
