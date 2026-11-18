@@ -21,6 +21,7 @@ from routers import (
     reports,
     scans,
     sources,
+    storage,
     wizard,
 )
 
@@ -53,7 +54,7 @@ async def lifespan(app: FastAPI):
             break
         except (OperationalError, InterfaceError) as exc:
             if attempt >= attempts:
-                logger.exception("Migrations failed after %d attempts; giving up", attempts)
+                logger.exception("Migrations failed after %d attempts; giving up", exc)
                 raise
             sleep = delay * (1 + random.random())  # full jitter
             detail = getattr(exc, "orig", None) or exc
@@ -74,7 +75,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for router in (auth, admin, sources, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud, onboarding):
+for router in (auth, admin, sources, storage, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud, onboarding):
     app.include_router(router.router)
 
 
