@@ -35,6 +35,10 @@ services:
       # Database backups (Phase 2.1): pg_dump files land here, checksummed
       # and listed under Admin → Database in the UI.
       NESTBOX_BACKUP_PATH: /backups
+      # Host-side folders for the mounts, surfaced read-only in Admin → Storage (#15)
+      NESTBOX_SOURCES_HOST_PATH: ${NESTBOX_SOURCES_PATH}
+      NESTBOX_INBOX_HOST_PATH: ${NESTBOX_INBOX_PATH}
+      NESTBOX_BACKUP_HOST_PATH: ${NESTBOX_BACKUP_PATH:-./backups}
     volumes:
       - ${NESTBOX_SOURCES_PATH:?Set NESTBOX_SOURCES_PATH in .env}:/sources:rw
       - ${NESTBOX_INBOX_PATH:?Set NESTBOX_INBOX_PATH in .env}:/inbox:rw
