@@ -1,15 +1,17 @@
 """Organization lifecycle helpers shared by first-run setup and the admin API (#10).
 
 create_org_with_defaults() creates the organization, its owner membership,
-and the per-org starter data (default record types + built-in Scan Inbox
-source) in one transaction. The RLS GUC is set locally so the new org's rows
-pass their WITH CHECK policies even though the caller's session is scoped to
-a different org (or has no org context at all, as during first-run setup).
+and the per-org starter data (default record types, storage location rows and
+the built-in Scan Inbox source) in one transaction. The RLS GUC is set
+locally so the new org's rows pass their WITH CHECK policies even though the
+caller's session is scoped to a different org (or has no org context at all,
+as during first-run setup).
 """
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from models import Organization, OrgMember, RecordType, Source
+from models import Organization, OrgMember, OrgSetting, RecordType, Source
+from services import storage as storage_svc
 
 
 def unique_slug(db: Session, name: str) -> str:
@@ -57,7 +59,14 @@ is created alongside. Returns the flushed Organization (id populated).
     ]
     for code, dname, retention in defaults:
         db.add(RecordType(org_id=org.id, code=code, name=dname, retention_years=retention))
-    # Built-in scan inbox source
+
+    # Per-org storage locations (#15): explicit rows so Admin → Storage can
+    # display and change them; defaults are the org's subtrees under the
+    # install-level mounts.
+    for key, value in storage_svc.default_paths(org.slug).items():
+        db.add(OrgSetting(org_id=org.id, key=key, value=value))
+
+    # Built-in scan inbox source — points at the org's own inbox subtree
     db.add(Source(org_id=org.id, name="Scan Inbox", kind="local",
-                  config={"root": "/inbox", "builtin_inbox": True}, is_monitored=True))
+                  config={"root": f"/inbox/{org.slug}", "builtin_inbox": True}, is_monitored=True))
     return org
