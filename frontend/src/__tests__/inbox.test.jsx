@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Inbox from '../pages/Inbox.jsx'
@@ -72,7 +72,8 @@ describe('Inbox (review queue)', () => {
     await screen.findByText('scan-001.pdf')
 
     fireEvent.click(screen.getByRole('button', { name: /scan all sources/i }))
-    expect(api.post).toHaveBeenCalledWith('/api/scans')
+    // React Query defers mutationFn to a microtask after mutate(), so wait for it
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/api/scans'))
   })
 
   it('bulk-select then file into a box posts bulk-patch with ids + box_id', async () => {
@@ -93,10 +94,12 @@ describe('Inbox (review queue)', () => {
     fireEvent.change(selects[0], { target: { value: '5' } })
 
     fireEvent.click(screen.getByRole('button', { name: /apply to selected/i }))
-    expect(api.post).toHaveBeenCalledWith('/api/records/bulk-patch', {
-      ids: [11, 12],
-      patch: { box_id: 5 },
-    })
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/api/records/bulk-patch', {
+        ids: [11, 12],
+        patch: { box_id: 5 },
+      }),
+    )
     // success toast reports how many were filed
     expect(await screen.findByText(/filed 2 records/i)).toBeInTheDocument()
   })
