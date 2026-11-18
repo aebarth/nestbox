@@ -6,9 +6,10 @@ requires explicit confirm; file-based sources are confined to the org's
 sources root; non-install admins can only see/manage their own org while
 install admins can manage any org.
 
-The suite shares one session-scoped database, so every test that mutates the
-default org's storage restores the slug defaults afterwards (and retires any
-records it seeded — records are append-only at the DB level).
+The suite shares one session-scoped database and Nestbox tables are
+append-only at the DB level (no DELETEs), so every test that mutates the
+default org restores its storage to the slug defaults afterwards, retires
+seeded records and deactivates seeded sources.
 """
 from datetime import datetime, timezone
 
@@ -48,13 +49,14 @@ def _retire_record(db_session, oid: int, rec_id: int) -> None:
         db_session.commit()
 
 
-def _delete_row(db_session, oid: int, model, row_id: int) -> None:
+def _deactivate_source(db_session, oid: int, source_id: int) -> None:
+    """Deactivate (not delete — sources are append-only at the DB level)."""
     from database import set_org_context
 
     set_org_context(db_session, "admin", 1, oid)
-    row = db_session.get(model, row_id)
-    if row is not None:
-        db_session.delete(row)
+    s = db_session.get(Source, source_id)
+    if s is not None:
+        s.is_active = False
         db_session.commit()
 
 
@@ -166,7 +168,7 @@ def test_file_sources_confined_to_org_root(admin_client, db_session):
         })
         assert r.status_code == 200, r.text
     finally:
-        _delete_row(db_session, oid, Source, sid)
+        _deactivate_source(db_session, oid, sid)
 
 
 def test_cross_org_storage_authz(admin_client, db_session):
