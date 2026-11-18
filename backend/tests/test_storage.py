@@ -7,9 +7,11 @@ sources root; non-install admins can only see/manage their own org while
 install admins can manage any org.
 
 The suite shares one session-scoped database, so every test that mutates the
-default org's storage restores the slug defaults afterwards (and deletes any
-rows it seeded).
+default org's storage restores the slug defaults afterwards (and retires any
+records it seeded — records are append-only at the DB level).
 """
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
@@ -32,6 +34,18 @@ def _restore_defaults(admin_client, oid: int, slug: str) -> None:
         "confirm_sources_change": True,
     })
     assert r.status_code == 200, r.text
+
+
+def _retire_record(db_session, oid: int, rec_id: int) -> None:
+    """Retire (not delete — records are append-only at the DB level)."""
+    from database import set_org_context
+
+    set_org_context(db_session, "admin", 1, oid)
+    rec = db_session.get(Record, rec_id)
+    if rec is not None:
+        rec.status = "retired"
+        rec.retired_at = datetime.now(timezone.utc)
+        db_session.commit()
 
 
 def _delete_row(db_session, oid: int, model, row_id: int) -> None:
@@ -78,7 +92,7 @@ def test_put_storage_custom_paths_and_inbox_sync(admin_client, db_session):
 
         body = admin_client.get("/api/storage").json()
         org = next(o for o in body["orgs"] if o["id"] == oid)
-        assert org["storage"]["backup_path"] == f"/backups/{slug}/dumps"
+        assert org["storage"]["backups"] == f"/backups/{slug}/dumps"
 
         # The built-in Scan Inbox source follows the org's inbox root
         srcs = admin_client.get("/api/sources").json()
@@ -120,7 +134,7 @@ def test_sources_change_requires_confirm(admin_client, org_db, db_session):
         assert any("old paths" in w for w in r.json()["warnings"])
     finally:
         _restore_defaults(admin_client, oid, slug)
-        _delete_row(db_session, oid, Record, rec.id)
+        _retire_record(db_session, oid, rec.id)
 
 
 def test_file_sources_confined_to_org_root(admin_client, db_session):
@@ -129,7 +143,7 @@ def test_file_sources_confined_to_org_root(admin_client, db_session):
         "name": "Sub-root test", "kind": "local",
         "config": {"root": f"/sources/{slug}/sub"},
     })
-    assert r.status_code == 201, r.text
+    assert r.status_code == 200, r.text
     sid = r.json()["id"]
     try:
         r = admin_client.post("/api/sources", json={
