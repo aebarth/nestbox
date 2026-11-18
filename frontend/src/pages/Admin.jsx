@@ -137,6 +137,13 @@ function Sources() {
     toast(res.ok ? `✓ ${s.name} looks good` : res.detail, res.ok ? 'ok' : 'error')
   }
 
+  async function scanNow(s) {
+    try {
+      await api.post(`/api/scans?source_id=${s.id}`)
+      toast(`Scan queued for ${s.name} — check Scan history.`)
+    } catch (e) { toast(e.detail || e.message, 'error') }
+  }
+
   async function connectGoogle(s) {
     try {
       const { url } = await api.get(`/api/connectors/google/authorize?source_id=${s.id}`)
@@ -186,6 +193,7 @@ function Sources() {
                       <Cloud size={14} /> {s.has_credentials ? 'Reconnect' : 'Connect Google'}
                     </button>
                   )}
+                  <button className="btn-secondary" onClick={() => scanNow(s)}>Scan now</button>
                   <button className="btn-secondary" onClick={() => testSource(s)}>Test</button>
                   <button className="btn-secondary" onClick={() => setEditing({ ...s, scan_cron: s.scan_cron || '' })}>Edit</button>
                 </div>

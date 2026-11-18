@@ -59,6 +59,35 @@ Each organization registers its **own** (free) API credentials — nothing is sh
 - **OneDrive / SharePoint**: [docs/microsoft-365-setup.md](docs/microsoft-365-setup.md)
 - **Google Drive**: [docs/google-drive-setup.md](docs/google-drive-setup.md)
 
+### Connecting a scanner
+
+Nestbox doesn't talk to scanners directly — it watches folders. Point your scanner at a
+folder, then make sure Nestbox tracks that folder (as the inbox, or as a source under
+`/sources`).
+
+**Example: Canon R50 → shared folder**
+
+1. **Create a drop folder on the host** running Docker, e.g. `~/nestbox/inbox`, and share it
+   over the network if the scanner isn't attached by USB:
+   - Windows: right-click the folder → *Give access to* → *Specific people*
+   - macOS: System Settings → General → Sharing → *File Sharing* → **+**
+   - Linux: add a Samba share (`smb.conf`)
+2. **Point the scanner at it.** In the Canon's settings choose *Scan to folder / SMB*, enter
+   `\\<host>\inbox` (or `smb://<host>/inbox`) with a username and password, and set the output
+   format to PDF. A USB-connected scanner that saves to a local path can write straight into
+   the same folder instead.
+3. **Tell Nestbox where it is.** In `.env`, set `NESTBOX_INBOX_PATH` to that folder and restart
+   the containers (`docker compose -f docker-compose.dev.yml up -d --build`). The built-in
+   *inbox* source tracks it automatically — no new source needed. If the scanner writes
+   somewhere else (another PC, a mapped share), mount that share on the host first and put the
+   folder under `NESTBOX_SOURCES_PATH` instead.
+4. **Scan and review.** Press **Scan all sources** (Inbox page or Dashboard) — or **Scan now**
+   on the source's row in *Admin → Sources*. New documents appear in the **Review Inbox**,
+   ready to rename, categorize and file.
+
+> Tip: give each scanner its own subfolder (e.g. `/sources/canon-r50`) so you can tell where a
+> document came from and monitor sources independently.
+
 ## The Scan-to-Shelf workflow
 
 1. Scan the paper record — your scanner saves a PDF into the inbox folder
