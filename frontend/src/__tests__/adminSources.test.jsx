@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Admin from '../pages/Admin.jsx'
@@ -79,12 +79,15 @@ describe('Admin → Sources', () => {
     expect(save).toBeEnabled()
     fireEvent.click(save)
 
-    expect(api.post).toHaveBeenCalledWith('/api/sources', expect.objectContaining({
-      name: 'Canon R50',
-      kind: 'local',
-      config: { root: '/sources/canon-r50' },
-      is_monitored: true,
-      is_active: true,
-    }))
+    // React Query defers mutationFn to a microtask after mutate(), so wait for it
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/api/sources', expect.objectContaining({
+        name: 'Canon R50',
+        kind: 'local',
+        config: { root: '/sources/canon-r50' },
+        is_monitored: true,
+        is_active: true,
+      })),
+    )
   })
 })
