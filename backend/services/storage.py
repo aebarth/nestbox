@@ -65,17 +65,16 @@ def org_backup_dir(db: Session, org: Organization) -> Path:
     session's RLS context must be scoped to this org for custom values to be
     visible.
     """
-    defaults = default_paths(org.slug)
+    mount_root, backup_key, _ = LOCATIONS["backups"]
+    default_backup = f"{mount_root}/{org.slug}"
     row = db.execute(
-        select(OrgSetting).where(
-            OrgSetting.org_id == org.id, OrgSetting.key == "storage_backup_path"
-        )
+        select(OrgSetting).where(OrgSetting.org_id == org.id, OrgSetting.key == backup_key)
     ).scalars().first()
     if row is not None and isinstance(row.value, str) and row.value:
         value = row.value.rstrip("/")
-        if value != defaults["backups"]:
+        if value != default_backup:
             return Path(value)
-    root = os.environ.get("NESTBOX_BACKUP_PATH", "").strip() or "/backups"
+    root = os.environ.get("NESTBOX_BACKUP_PATH", "").strip() or mount_root
     return Path(root) / org.slug
 
 
