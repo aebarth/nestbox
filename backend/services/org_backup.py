@@ -125,7 +125,7 @@ def _json_safe(v, seen=None):
             raise OrgBackupError("circular reference in exported value (nested list)")
         seen.add(vid)
         try:
-            return [_json_safe(x) for x in v]
+            return [_json_safe(x, seen) for x in v]
         finally:
             seen.discard(vid)
     return str(v)
@@ -401,25 +401,12 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
                 maps[t][row["id"]] = cur.fetchone()[0]
         # 3) records.superseded_by_id is a self-FK — remap once all rows exist.
         for r in data.get("records", []):
-            if r.get("superseded_by_id") is not None:
-                new_ref = maps["records"].get(r["superseded_by_id"])
-                if new_ref is not None:
-                    cur.execute(
-                        "UPDATE records SET superseded_by_id = %s WHERE id = %s",
-                        (new_ref, maps["records"][r["id"]]),
-                    )
-        # 4) Restore the file tree into the target org's inbox/sources roots.
-        from models import Organization
-        from services import storage as storage_svc
-
-        torg = db.get(Organization, target_org_id)
-        if torg is not None and files_index:
-            eff = storage_svc.effective_storage(db, torg)
-            for entry in files_index:
-                dest_root = Path(eff.get("sources", "/sources"))
-                prefix = f"files/{entry['key']}/"
-                for info in zf_infolist if False else []:  # placeholder; files restored below
-                    pass
+            old_sup = r.get("superseded_by_id")
+            if old_sup is not None and old_sup in maps["records"]:
+                cur.execute(
+                    "UPDATE records SET superseded_by_id = %s WHERE id = %s",
+                    (maps["records"][old_sup], maps["records"][r["id"]]),
+                )
         raw.commit()
     except Exception:
         raw.rollback()
@@ -427,13 +414,52 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
     finally:
         raw.close()
 
+    # 4) Files: extract into the restored sources' roots (matched by name;
+    # best-effort — the DB is committed, missing files can be re-scanned).
+    files_restored = 0
+    if files_index:
+        raw2 = schema_engine.raw_connection()
+        try:
+            cur2 = raw2.cursor()
+            for entry in files_index:
+                if not entry.get("archived"):
+                    continue
+                cur2.execute(
+                    "SELECT config->>'root' FROM sources WHERE org_id = %s AND name = %s "
+                    "ORDER BY id LIMIT 1",
+                    (target_org_id, entry["name"]),
+                )
+                row_ = cur2.fetchone()
+                root = Path(row_[0]) if row_ and row_[0] else None
+                if root is None:
+                    continue
+                prefix = f"files/{entry['key']}/"
+                with zipfile.ZipFile(path) as zf:
+                    for info in zf.infolist():
+                        if not info.filename.startswith(prefix):
+                            continue
+                        dest = root / info.filename[len(prefix):]
+                        try:
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(info) as sf, open(dest, "wb") as df:
+                                shutil.copyfileobj(sf, df)
+                            files_restored += 1
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        finally:
+            raw2.close()
+
     _audit_org(actor_username, target_org_id, {
-        "op": "org_restore", "backup_id": backup_id, "file": str(path),
-        "sha256": backup.sha256,
-        "counts": {t: len(rows) for t, rows in data.items()},
+        "op": "org_restore", "backup": backup.filename, "sha256": backup.sha256,
+        "source_org_id": backup.org_id, "files_restored": files_restored,
     })
+    log.warning("Org %s restored from %s into org %s by %s",
+                manifest.get("slug"), backup.filename, target_org_id, actor_username)
     return {
-        "ok": True,
-        "restored_org_id": target_org_id,
-        "counts": {t: len(rows) for t, rows in data.items()},
+        "restored_into": target_org_id,
+        "backup": backup.filename,
+        "counts": manifest.get("counts", {}),
+        "files_restored": files_restored,
     }
