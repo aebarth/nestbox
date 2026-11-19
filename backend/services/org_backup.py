@@ -1,7 +1,8 @@
 """Org-level backup and restore (#15, PR B).
 
 An org backup is a ZIP written to the organization's own backup path
-(``/backups/<slug>`` by default — see services/storage.py) containing:
+(``<backup root>/<slug>`` by default, where the root is NESTBOX_BACKUP_PATH
+or /backups — see services/storage.py::org_backup_dir) containing:
 
 * ``manifest.json``        export metadata + per-table row counts
 * ``data/<table>.json``    every row of each org data table (dependency order)
@@ -133,8 +134,11 @@ def create_org_backup(db: Session, org_id: int, actor_username: str = "system",
     from database import set_org_context
 
     set_org_context(db, actor_username, actor_user_id or 0, org_id)
-    eff = storage_svc.effective_storage(db, org)
-    out_dir = Path(eff["backups"])
+    # The zip goes to the org's own backup path — an explicit Admin → Storage
+    # custom path wins, else <install backup root>/<slug>; the root honors
+    # NESTBOX_BACKUP_PATH like services/lifecycle.py does (dev/CI runs have
+    # no /backups container mount).
+    out_dir = storage_svc.org_backup_dir(db, org)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Read every org table (owner role: sees all rows regardless of RLS).

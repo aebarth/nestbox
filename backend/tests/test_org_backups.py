@@ -7,9 +7,19 @@ the install. Full-DB backup/restore is unchanged (test_lifecycle.py).
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
+import pytest
+
 from main import app
 from models import Box, Project, Record, Source
 from services.org_backup import TABLE_ORDER
+
+
+@pytest.fixture(autouse=True)
+def backup_tmpdir(tmp_path, monkeypatch):
+    """Org zips land in a per-test dir (CI has no /backups mount)."""
+    d = tmp_path / "backups"
+    monkeypatch.setenv("NESTBOX_BACKUP_PATH", str(d))
+    return d
 
 
 def _default_org(db_session) -> tuple[int, str]:

@@ -47,6 +47,27 @@ def effective_storage(db: Session, org: Organization) -> dict[str, str]:
     return out
 
 
+def org_backup_dir(db: Session, org: Organization) -> Path:
+    """Directory where this org's backup zips are written (services/org_backup).
+
+    An explicit Admin → Storage custom path (storage_backup_path) wins;
+    otherwise the slug-based default under the install-level backup root —
+    NESTBOX_BACKUP_PATH when set (dev / CI runs without the container mount),
+    else the /backups mount. Mirrors services/lifecycle.py::backup_dir so both
+    backup tiers share one root by default. The session's RLS context must be
+    scoped to this org for a custom value to be visible.
+    """
+    row = db.execute(
+        select(OrgSetting).where(
+            OrgSetting.org_id == org.id, OrgSetting.key == "storage_backup_path"
+        )
+    ).scalars().first()
+    if row is not None and isinstance(row.value, str) and row.value:
+        return Path(row.value.rstrip("/"))
+    root = os.environ.get("NESTBOX_BACKUP_PATH", "").strip() or "/backups"
+    return Path(root) / org.slug
+
+
 def validate_location(location: str, path: str) -> str:
     """Validate a per-org location path; return it normalized (no trailing /).
 
