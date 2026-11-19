@@ -38,6 +38,7 @@ import shutil
 import uuid
 import zipfile
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import text
@@ -83,11 +84,14 @@ def _sha256(path: Path) -> str:
 
 
 def _enc(v):
-    """JSON encoder hook: bytes → base64 marker, datetimes → ISO strings."""
+    """JSON encoder hook: bytes → base64 marker, datetimes → ISO strings,
+    Decimal → float (psycopg2 returns NUMERIC as Decimal; json can't hold it)."""
     if isinstance(v, bytes):
         return {"__b64__": base64.b64encode(v).decode()}
     if isinstance(v, (datetime, date)):
         return v.isoformat()
+    if isinstance(v, Decimal):
+        return float(v)
     return v
 
 
@@ -267,12 +271,18 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
         # 2) Insert in dependency order, remapping FKs at insert time.
         for t in tables:
             cur.execute(
-                "SELECT column_name FROM information_schema.columns "
+                "SELECT column_name, data_type FROM information_schema.columns "
                 "WHERE table_schema = 'public' AND table_name = %s AND is_generated = 'N' "
                 "ORDER BY ordinal_position",
                 (t,),
             )
-            cols = [c[0] for c in cur.fetchall() if c[0] != "id"]
+            col_info = [(c[0], c[1]) for c in cur.fetchall() if c[0] != "id"]
+            cols = [name for name, _dt in col_info]
+            # JSONB values arrive from the export as Python dict/list/str.
+            # psycopg2 cannot bind a dict at all (and would mis-adapt a list
+            # to a PG array), so re-serialize them — Postgres parses the text
+            # into jsonb on insert. Real ARRAY columns stay Python lists.
+            json_cols = {name for name, dt in col_info if dt in ("json", "jsonb")}
             maps[t] = {}
             existing_codes: dict[str, int] = {}
             target_builtin: int | None = None
@@ -305,6 +315,8 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
                     parent = FK_REMAP.get(t, {}).get(c)
                     if parent is not None and v is not None:
                         v = maps[parent].get(v, v)
+                    if c in json_cols and v is not None:
+                        v = json.dumps(v)
                     vals.append(v)
                 cur.execute(
                     f"INSERT INTO {t} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) RETURNING id",
