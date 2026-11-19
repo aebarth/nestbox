@@ -13,3 +13,9 @@
 
 ALTER TABLE backups ADD COLUMN IF NOT EXISTS org_id BIGINT REFERENCES organizations(id);
 CREATE INDEX IF NOT EXISTS idx_backups_org_id ON backups (org_id);
+
+-- The original kind check (004 / db-init) only allowed install-level kinds;
+-- org-scoped exports use kind='org'. Drop and re-add so both fresh installs
+-- (db-init DDL) and upgraded installs (legacy-v4) end up with the wider set.
+ALTER TABLE backups DROP CONSTRAINT IF EXISTS backups_kind_check;
+ALTER TABLE backups ADD CONSTRAINT backups_kind_check CHECK (kind IN ('manual', 'scheduled', 'org'));

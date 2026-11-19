@@ -83,16 +83,49 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _enc(v):
-    """JSON encoder hook: bytes → base64 marker, datetimes → ISO strings,
-    Decimal → float (psycopg2 returns NUMERIC as Decimal; json can't hold it)."""
+def _json_safe(v, seen=None):
+    """Convert a psycopg2 value to a JSON-safe structure (recursively).
+
+    bytes → base64 marker (reversed by _dec on restore), datetime/date → ISO
+    strings, Decimal → float (psycopg2 returns NUMERIC as Decimal), UUID →
+    str; dict/list are walked recursively; anything exotic falls back to
+    str() so an unexpected PG type can never break an export. `seen` tracks
+    the container path and turns a genuinely circular structure into a clear
+    error instead of a RecursionError.
+    """
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
     if isinstance(v, bytes):
         return {"__b64__": base64.b64encode(v).decode()}
     if isinstance(v, (datetime, date)):
         return v.isoformat()
     if isinstance(v, Decimal):
         return float(v)
-    return v
+    if isinstance(v, uuid.UUID):
+        return str(v)
+    if isinstance(v, dict):
+        if seen is None:
+            seen = set()
+        vid = id(v)
+        if vid in seen:
+            raise OrgBackupError(f"circular reference in exported value (dict at {v!r:.120})")
+        seen.add(vid)
+        try:
+            return {str(k): _json_safe(x, seen) for k, x in v.items()}
+        finally:
+            seen.discard(vid)
+    if isinstance(v, (list, tuple)):
+        if seen is None:
+            seen = set()
+        vid = id(v)
+        if vid in seen:
+            raise OrgBackupError("circular reference in exported value (nested list)")
+        seen.add(vid)
+        try:
+            return [_json_safe(x, seen) for x in v]
+        finally:
+            seen.discard(vid)
+    return str(v)
 
 
 def _dec(v):
@@ -125,7 +158,8 @@ def create_org_backup(db: Session, org_id: int, actor_username: str = "system",
     """Export one organization's data + file tree to a checksummed zip.
 
     The zip lands in the org's effective backup path. Returns the committed
-    Backup row; raises LookupError (unknown org) or OSError on failure.
+    Backup row; raises LookupError (unknown org) or OrgBackupError/OSError
+    on failure.
     """
     from models import Backup, Organization
     from services import storage as storage_svc
@@ -171,7 +205,17 @@ def create_org_backup(db: Session, org_id: int, actor_username: str = "system",
     files_index: list[dict] = []
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for table in TABLE_ORDER:
-            zf.writestr(f"data/{table}.json", json.dumps(data[table], default=_enc))
+            # Explicit per-value conversion (not a json default= hook): every
+            # PG type psycopg2 may return is mapped to a JSON primitive up
+            # front, and a failure names the table so it is diagnosable.
+            try:
+                rows = [{k: _json_safe(v) for k, v in row.items()} for row in data[table]]
+                payload = json.dumps(rows)
+            except Exception as exc:
+                raise OrgBackupError(
+                    f"could not serialize table {table} ({len(data[table])} rows): {exc!r}"
+                ) from exc
+            zf.writestr(f"data/{table}.json", payload)
         # File tree: each active file-based source's root (the built-in inbox
         # is one of them). Best-effort — missing folders are recorded, not fatal.
         for i, (sname, sroot) in enumerate(file_sources, start=1):
@@ -199,7 +243,7 @@ def create_org_backup(db: Session, org_id: int, actor_username: str = "system",
             "files_index": files_index,
             "counts": {t: len(rows) for t, rows in data.items()},
         }
-        zf.writestr("manifest.json", json.dumps(manifest))
+        zf.writestr("manifest.json", json.dumps(_json_safe(manifest)))
 
     sha = _sha256(path)
     backup = Backup(
