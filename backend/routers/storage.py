@@ -1,7 +1,8 @@
 """Per-organization storage locations (#15).
 
 View, change and probe an org's inbox / sources-root / backup paths under
-the install-level mounts (/inbox, /sources, /backups).
+the install-level mounts (/inbox, /sources, /backups), plus org-scoped
+backup/restore (PR B) into the org's own backup path.
 
 Auth: install admins (users.role == 'admin') may view and manage any org;
 org owners/admins may only view and manage their own (current) org. The spec
@@ -18,9 +19,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import get_db, set_org_context
-from models import AuditLog, Organization, OrgSetting, Record, Source, User
+from models import AuditLog, Backup, Organization, OrgSetting, Record, Source, User
 from security import get_current_user_with_org
-from services import storage as storage_svc
+from services import org_backup, storage as storage_svc
 
 router = APIRouter(prefix="/api/storage", tags=["storage"])
 
@@ -193,3 +194,86 @@ def test_storage_location(body: StorageTestIn, db: Session = Depends(get_db),
     set_org_context(db, user.username, user.id, org_id)
     path = storage_svc.effective_storage(db, org)[body.location]
     return storage_svc.probe_writable(path)
+
+
+# ---------------------------------------------------------------------------
+# Org-scoped backup / restore (PR B). Install-level full-DB backups stay in
+# routers/admin.py + services/lifecycle.py; these operate on one org only.
+# ---------------------------------------------------------------------------
+
+class OrgBackupCreateIn(BaseModel):
+    notes: str = ""
+
+
+class OrgRestoreIn(BaseModel):
+    target_org_id: int | None = None  # default: the backup's own org
+    confirm: bool = False
+
+
+def _org_backup_out(b: Backup) -> dict:
+    return {
+        "id": b.id,
+        "filename": b.filename,
+        "size_bytes": b.size_bytes,
+        "sha256": b.sha256,
+        "kind": b.kind,
+        "org_id": b.org_id,
+        "created_by": b.created_by,
+        "notes": b.notes,
+        "created_at": b.created_at,
+    }
+
+
+@router.post("/org/{org_id}/backups")
+def create_org_backup(org_id: int, body: OrgBackupCreateIn, db: Session = Depends(get_db),
+                      auth: tuple = Depends(get_current_user_with_org)):
+    """Run an org-scoped backup (data + file tree zip) into the org's backup path."""
+    user = _authorize(auth, org_id)
+    try:
+        b = org_backup.create_org_backup(db, org_id, actor_username=user.username,
+                                         actor_user_id=user.id, notes=body.notes)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Org backup failed: {exc}")
+    return _org_backup_out(b)
+
+
+@router.get("/org/{org_id}/backups")
+def list_org_backups(org_id: int, db: Session = Depends(get_db),
+                     auth: tuple = Depends(get_current_user_with_org)):
+    """List this org's backups (newest first)."""
+    _authorize(auth, org_id)
+    rows = db.execute(
+        select(Backup).where(Backup.org_id == org_id, Backup.kind == "org")
+        .order_by(Backup.created_at.desc(), Backup.id.desc())
+    ).scalars().all()
+    return [_org_backup_out(b) for b in rows]
+
+
+@router.post("/org/{org_id}/backups/{backup_id}/restore")
+def restore_org_backup(org_id: int, backup_id: int, body: OrgRestoreIn,
+                       db: Session = Depends(get_db), auth: tuple = Depends(get_current_user_with_org)):
+    """Restore an org backup into a target org (fresh ids, remapped FKs).
+
+    v1 fills an empty org — it does not replace existing document data.
+    Org admins may only restore their own org's backups into their own org;
+    install admins may target any org.
+    """
+    user = _authorize(auth, org_id)
+    backup = db.get(Backup, backup_id)
+    if backup is None or backup.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Backup not found for this organization")
+    target = body.target_org_id if body.target_org_id is not None else org_id
+    if target != org_id:
+        _authorize(auth, target)
+    if not body.confirm:
+        raise HTTPException(status_code=422, detail="Pass confirm=true to run the restore")
+    try:
+        return org_backup.restore_org_backup(db, backup_id, target, actor_username=user.username)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except org_backup.OrgBackupError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Org restore failed: {exc}")

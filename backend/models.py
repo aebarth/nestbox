@@ -238,15 +238,19 @@ class Alert(Base, TimestampMixin):
 # ============================================================================
 
 class Backup(Base):
-    """A pg_dump backup of the nestbox database (Phase 2.1, #9).
+    """A pg_dump backup of the nestbox database (Phase 2.1, #9), or an
+    org-scoped zip export (#15 PR B) when org_id is set.
 
     Not covered by the trigger-based audit loop (retention pruning deletes
-    rows); services/lifecycle.py writes explicit audit_log entries instead.
-    Install-level: backups are full-DB, not org-scoped.
+    rows); services/lifecycle.py and services/org_backup.py write explicit
+    audit_log entries instead. Install-level rows have org_id NULL and a
+    filename relative to NESTBOX_BACKUP_PATH; org rows store the absolute
+    container path in filename.
     """
     __tablename__ = "backups"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     filename: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"))
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     sha256: Mapped[str] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(Text, default="manual")
