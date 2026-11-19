@@ -50,20 +50,31 @@ def effective_storage(db: Session, org: Organization) -> dict[str, str]:
 def org_backup_dir(db: Session, org: Organization) -> Path:
     """Directory where this org's backup zips are written (services/org_backup).
 
-    An explicit Admin → Storage custom path (storage_backup_path) wins;
-    otherwise the slug-based default under the install-level backup root —
-    NESTBOX_BACKUP_PATH when set (dev / CI runs without the container mount),
-    else the /backups mount. Mirrors services/lifecycle.py::backup_dir so both
-    backup tiers share one root by default. The session's RLS context must be
-    scoped to this org for a custom value to be visible.
+    A genuinely custom Admin → Storage path (storage_backup_path differing
+    from the slug default) wins; otherwise the slug-based default under the
+    install-level backup root — NESTBOX_BACKUP_PATH when set (dev / CI runs
+    without the container mount), else the /backups mount. Mirrors
+    services/lifecycle.py::backup_dir so both backup tiers share one root by
+    default.
+
+    Note: migration 007 and org creation persist the slug default itself as an
+    org_settings row, so "a row exists" does NOT mean "custom" — only a value
+    different from the default is treated as explicit. (If an admin sets the
+    path back to exactly the slug default while NESTBOX_BACKUP_PATH points
+    elsewhere, zips follow the env root; in compose both are /backups.) The
+    session's RLS context must be scoped to this org for custom values to be
+    visible.
     """
+    defaults = default_paths(org.slug)
     row = db.execute(
         select(OrgSetting).where(
             OrgSetting.org_id == org.id, OrgSetting.key == "storage_backup_path"
         )
     ).scalars().first()
     if row is not None and isinstance(row.value, str) and row.value:
-        return Path(row.value.rstrip("/"))
+        value = row.value.rstrip("/")
+        if value != defaults["backups"]:
+            return Path(value)
     root = os.environ.get("NESTBOX_BACKUP_PATH", "").strip() or "/backups"
     return Path(root) / org.slug
 
