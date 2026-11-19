@@ -13,7 +13,8 @@ Install-level full-DB backups (services/lifecycle.py, pg_dump -Fc under
 /backups) are unchanged; this is a second, org-scoped tier.
 
 Restore re-inserts the exported rows into a target organization with fresh
-primary keys (sequences) and remaps every foreign key, so it works no matter
+primary keys (sequences), remapped foreign keys, and fresh record UUIDs
+(records.uuid is UNIQUE install-wide, not per-org), so it works no matter
 what other data lives on the install. v1 constraint: the target org must hold
 no document data (records, boxes, duplicate groups, folder rules, scan runs,
 file events, alerts) — restore FILLS an empty org, it does not replace
@@ -354,6 +355,12 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
         for t in tables:
             col_info = _table_columns(cur, t)
             cols = [name for name, _oid in col_info]
+            # records.uuid is UNIQUE install-wide (not per-org): re-using the
+            # source org's values would always collide while the source still
+            # exists. Drop the column so the DB default (gen_random_uuid())
+            # mints a fresh identity for each restored copy.
+            if t == "records":
+                cols = [c for c in cols if c != "uuid"]
             # JSONB values arrive from the export as Python dict/list/str.
             # psycopg2 cannot bind a dict at all (and would mis-adapt a list
             # to a PG array), so re-serialize them — Postgres parses the text
