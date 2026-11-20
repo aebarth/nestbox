@@ -132,7 +132,7 @@ def update_storage(org_id: int, body: StorageUpdateIn, db: Session = Depends(get
             raise HTTPException(
                 status_code=422,
                 detail="This organization already has records. Changing the sources root will NOT move "
-                       "existing files — record paths would go stale (re-scan to re-discover them). "
+                       "existing file paths — record paths would go stale (re-scan to re-discover them). "
                        "Re-send with confirm_sources_change=true to proceed.",
             )
         if has_records:
@@ -142,7 +142,7 @@ def update_storage(org_id: int, body: StorageUpdateIn, db: Session = Depends(get
             old = Path(current["inbox"])
             if old.is_dir() and any(old.iterdir()):
                 warnings.append(
-                    f"The previous inbox folder ({current['inbox']}) is not empty; "
+                    f"The previous inbox folder ({old}) is not empty; "
                     "unfiled PDFs there will no longer be discovered."
                 )
         except OSError:
@@ -208,6 +208,8 @@ class OrgBackupCreateIn(BaseModel):
 class OrgRestoreIn(BaseModel):
     target_org_id: int | None = None  # default: the backup's own org
     confirm: bool = False
+    # Wipe the target's existing document data + projects before filling.
+    replace: bool = False
 
 
 def _org_backup_out(b: Backup) -> dict:
@@ -256,9 +258,10 @@ def restore_org_backup(org_id: int, backup_id: int, body: OrgRestoreIn,
                        db: Session = Depends(get_db), auth: tuple = Depends(get_current_user_with_org)):
     """Restore an org backup into a target org (fresh ids, remapped FKs).
 
-    v1 fills an empty org — it does not replace existing document data.
-    Org admins may only restore their own org's backups into their own org;
-    install admins may target any org.
+    Fills an empty org by default; with replace=true the target's existing
+document data + projects are wiped first (atomic with the fill). Org admins
+may only restore their own org's backups into their own org; install admins
+may target any org.
     """
     user = _authorize(auth, org_id)
     backup = db.get(Backup, backup_id)
@@ -270,7 +273,8 @@ def restore_org_backup(org_id: int, backup_id: int, body: OrgRestoreIn,
     if not body.confirm:
         raise HTTPException(status_code=422, detail="Pass confirm=true to run the restore")
     try:
-        return org_backup.restore_org_backup(db, backup_id, target, actor_username=user.username)
+        return org_backup.restore_org_backup(db, backup_id, target, actor_username=user.username,
+                                             replace=body.replace)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except org_backup.OrgBackupError as exc:

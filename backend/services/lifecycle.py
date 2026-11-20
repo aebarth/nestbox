@@ -184,7 +184,7 @@ def create_backup(
         "op": "backup", "filename": filename, "sha256": sha, "size_bytes": backup.size_bytes,
     })
     db.commit()
-    log.info("Backup %s created (%d bytes) by %s", filename, backup.size_bytes, actor_username)
+    log.info("Backup %s created (%d bytes) by %s", filename, path, backup.size_bytes, actor_username)
     return backup
 
 
@@ -196,7 +196,7 @@ def verify_backup(backup: Backup) -> None:
     """Raise LifecycleError if the file is missing or its checksum drifted."""
     path = backup_dir() / backup.filename
     if not path.is_file():
-        raise LifecycleError(f"Backup file {backup.filename} is missing from the backup directory")
+        raise LifecycleError(f"Backup file {path} is missing from the backup directory")
     if _sha256(path) != backup.sha256:
         raise LifecycleError(
             f"Checksum mismatch for {backup.filename} — the file on disk does not match "
@@ -270,6 +270,16 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     backup = get_backup(db, backup_id)
     if backup is None:
         raise LookupError(f"Backup {backup_id} not found")
+    if backup.org_id is not None:
+        # Org backups (kind='org') are zip files, not pg_dump archives. Without
+        # this guard the checksum passes, then the code below terminates
+        # sessions and COMMITS DROP SCHEMA public CASCADE before pg_restore
+        # chokes on the zip — destroying the live database over a user error.
+        raise LifecycleError(
+            f"Backup {backup_id} is an organization backup (org {backup.org_id}). Restore it via "
+            f"POST /api/storage/org/{backup.org_id}/backups/{backup_id}/restore — install-level "
+            "restore only accepts full-DB dumps."
+        )
 
     # Extract all data we need from the ORM object NOW. After db.rollback()
     # below, the instance's attributes are expired and the backups table will
@@ -395,5 +405,5 @@ def prune_old_backups(db: Session, retention: int | None = None, actor_username:
         removed.append(row.filename)
     _audit(db, actor_username, "UPDATE", None, {"op": "prune", "removed": removed, "retention": retention})
     db.commit()
-    log.info("Pruned %d old backup(s): %s", len(removed), ", ".join(removed))
+    log.info("Pruned %d old backup(s): %s", len(removed), removed)
     return len(removed)
