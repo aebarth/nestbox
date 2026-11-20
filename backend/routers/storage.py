@@ -132,7 +132,7 @@ def update_storage(org_id: int, body: StorageUpdateIn, db: Session = Depends(get
             raise HTTPException(
                 status_code=422,
                 detail="This organization already has records. Changing the sources root will NOT move "
-                       "existing file paths — record paths would go stale (re-scan to re-discover them). "
+                       "existing files — record paths would go stale (re-scan to re-discover them). "
                        "Re-send with confirm_sources_change=true to proceed.",
             )
         if has_records:
@@ -142,7 +142,7 @@ def update_storage(org_id: int, body: StorageUpdateIn, db: Session = Depends(get
             old = Path(current["inbox"])
             if old.is_dir() and any(old.iterdir()):
                 warnings.append(
-                    f"The previous inbox folder ({old}) is not empty; "
+                    f"The previous inbox folder ({current['inbox']}) is not empty; "
                     "unfiled PDFs there will no longer be discovered."
                 )
         except OSError:

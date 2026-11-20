@@ -184,7 +184,7 @@ def create_backup(
         "op": "backup", "filename": filename, "sha256": sha, "size_bytes": backup.size_bytes,
     })
     db.commit()
-    log.info("Backup %s created (%d bytes) by %s", filename, path, backup.size_bytes, actor_username)
+    log.info("Backup %s created (%d bytes) by %s", filename, backup.size_bytes, actor_username)
     return backup
 
 
@@ -196,7 +196,7 @@ def verify_backup(backup: Backup) -> None:
     """Raise LifecycleError if the file is missing or its checksum drifted."""
     path = backup_dir() / backup.filename
     if not path.is_file():
-        raise LifecycleError(f"Backup file {path} is missing from the backup directory")
+        raise LifecycleError(f"Backup file {backup.filename} is missing from the backup directory")
     if _sha256(path) != backup.sha256:
         raise LifecycleError(
             f"Checksum mismatch for {backup.filename} — the file on disk does not match "
@@ -405,5 +405,5 @@ def prune_old_backups(db: Session, retention: int | None = None, actor_username:
         removed.append(row.filename)
     _audit(db, actor_username, "UPDATE", None, {"op": "prune", "removed": removed, "retention": retention})
     db.commit()
-    log.info("Pruned %d old backup(s): %s", len(removed), removed)
+    log.info("Pruned %d old backup(s): %s", len(removed), ", ".join(removed))
     return len(removed)
