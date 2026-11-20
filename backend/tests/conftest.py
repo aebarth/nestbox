@@ -221,7 +221,28 @@ def org_db(db_session, default_org_id):
 
 @pytest.fixture()
 def db_session(database):
-    from database import SessionLocal
+    """ORM session pinned to one connection for the whole test.
 
-    with SessionLocal() as session:
+    The RLS scope lives in per-connection GUCs (set_org_context uses plain
+    SET). A pooled Session re-checks-out a connection after every COMMIT and
+    can be handed a *different* physical one — carrying whatever org context
+    an earlier request or test left on it — so post-commit re-reads fail
+    closed at random (the NoResultFound in test_records_patch). Pinning the
+    session to its own connection keeps the GUCs stable across commits, and
+    the committed RESET ALL starts every test from a known RLS state instead
+    of whatever the pool happened to hand back.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    conn = database.connect()
+    # Commit the reset: a SET/RESET inside a transaction is reverted if that
+    # transaction rolls back, and conn.close() below would roll back.
+    with conn.begin():
+        conn.execute(text("RESET ALL"))
+    session = Session(bind=conn, autoflush=False, expire_on_commit=False)
+    try:
         yield session
+    finally:
+        session.close()
+        conn.close()

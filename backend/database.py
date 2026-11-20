@@ -32,11 +32,23 @@ class Base(DeclarativeBase):
 
 
 def get_db():
-    db = SessionLocal()
+    """Yield a request-scoped Session pinned to one connection.
+
+    The RLS/audit GUCs are per-connection and the auth dependency sets them
+    once per request. A pooled session may re-check-out a *different*
+    connection after a mid-request COMMIT (login, wizards, heartbeats) and
+    keep querying under whatever org context that connection last carried —
+    fail-closed at best, another org's scope at worst. One request = one
+    connection is what makes set_org_context's session-scoped SET actually
+    session-scoped.
+    """
+    conn = engine.connect()
+    db = Session(bind=conn, autoflush=False, expire_on_commit=False)
     try:
         yield db
     finally:
         db.close()
+        conn.close()
 
 
 def set_org_context(db: Session, username: str, user_id: int, org_id: int) -> None:
@@ -46,9 +58,10 @@ def set_org_context(db: Session, username: str, user_id: int, org_id: int) -> No
     mid-flight (login, wizards, heartbeats) and then query again — with
     SET LOCAL the GUCs would vanish at COMMIT and every post-commit RLS
     query would fail closed. Session-scoped is safe because each request
-    owns one connection for its lifetime and the auth dependency always
-    re-sets these before any RLS access; a recycled pooled connection can
-    never reach an RLS table without going through that dependency first.
+    owns one connection for its lifetime (see get_db) and the auth
+    dependency always re-sets these before any RLS access; a recycled
+    pooled connection can never reach an RLS table without going through
+    that dependency first.
     """
     db.execute(text("SET app.username = :u"), {"u": username})
     db.execute(text("SET app.user_id = :uid"), {"uid": str(user_id)})
