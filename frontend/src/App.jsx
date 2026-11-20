@@ -12,6 +12,7 @@ import Files from './pages/Files.jsx'
 import Inbox from './pages/Inbox.jsx'
 import Login from './pages/Login.jsx'
 import Onboarding from './pages/Onboarding.jsx'
+import OrgBackups from './pages/OrgBackups.jsx'
 import Organizations from './pages/Organizations.jsx'
 import OrgPicker from './pages/OrgPicker.jsx'
 import RecordLink from './pages/RecordLink.jsx'
@@ -87,6 +88,10 @@ export default function App() {
     return <Spinner label="Starting Nestbox…" />
   }
 
+  // Org backups (#15 PR C): install admins manage any org; org owners/admins
+  // manage their own. Mirrors the /api/storage authz rule.
+  const canManageBackups = user.role === 'admin' || ['owner', 'admin'].includes(current?.role)
+
   return (
     <ToastProvider>
       <Layout user={user}>
@@ -98,6 +103,7 @@ export default function App() {
           <Route path="/boxes" element={<Boxes />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/backups" element={canManageBackups ? <OrgBackups user={user} /> : <Navigate to="/" />} />
           <Route path="/onboarding" element={user.role === 'admin' ? <Onboarding /> : <Navigate to="/" />} />
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" />} />
           <Route path="/admin/orgs" element={user.role === 'admin' ? <Organizations /> : <Navigate to="/" />} />
