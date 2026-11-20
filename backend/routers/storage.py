@@ -208,6 +208,8 @@ class OrgBackupCreateIn(BaseModel):
 class OrgRestoreIn(BaseModel):
     target_org_id: int | None = None  # default: the backup's own org
     confirm: bool = False
+    # Wipe the target's existing document data + projects before filling.
+    replace: bool = False
 
 
 def _org_backup_out(b: Backup) -> dict:
@@ -256,9 +258,10 @@ def restore_org_backup(org_id: int, backup_id: int, body: OrgRestoreIn,
                        db: Session = Depends(get_db), auth: tuple = Depends(get_current_user_with_org)):
     """Restore an org backup into a target org (fresh ids, remapped FKs).
 
-    v1 fills an empty org — it does not replace existing document data.
-    Org admins may only restore their own org's backups into their own org;
-    install admins may target any org.
+    Fills an empty org by default; with replace=true the target's existing
+document data + projects are wiped first (atomic with the fill). Org admins
+may only restore their own org's backups into their own org; install admins
+may target any org.
     """
     user = _authorize(auth, org_id)
     backup = db.get(Backup, backup_id)
@@ -270,7 +273,8 @@ def restore_org_backup(org_id: int, backup_id: int, body: OrgRestoreIn,
     if not body.confirm:
         raise HTTPException(status_code=422, detail="Pass confirm=true to run the restore")
     try:
-        return org_backup.restore_org_backup(db, backup_id, target, actor_username=user.username)
+        return org_backup.restore_org_backup(db, backup_id, target, actor_username=user.username,
+                                             replace=body.replace)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except org_backup.OrgBackupError as exc:
