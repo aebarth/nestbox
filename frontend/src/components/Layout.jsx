@@ -5,6 +5,7 @@ import {
   Building2,
   Database as DatabaseIcon,
   FileText,
+  FolderTree,
   HardDrive,
   Inbox as InboxIcon,
   LayoutDashboard,
@@ -66,8 +67,9 @@ export default function Layout({ user, children }) {
 
   const currentOrg = orgs.data?.current
   const showSwitcher = orgs.data && orgs.data.orgs.length > 1
-  // Org backups (#15 PR C): install admins or owners/admins of the current org.
-  const canManageBackups = user.role === 'admin' || ['owner', 'admin'].includes(currentOrg?.role)
+  // Storage + org backups (#15): install admins or owners/admins of the
+  // current org. Mirrors the /api/storage authz rule.
+  const canManageStorage = user.role === 'admin' || ['owner', 'admin'].includes(currentOrg?.role)
 
   return (
     <div className="flex min-h-screen">
@@ -115,7 +117,20 @@ export default function Layout({ user, children }) {
               )}
             </NavLink>
           ))}
-          {canManageBackups && (
+          {canManageStorage && (
+            <NavLink
+              to="/storage"
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <FolderTree size={17} />
+              Storage
+            </NavLink>
+          )}
+          {canManageStorage && (
             <NavLink
               to="/backups"
               className={({ isActive }) =>

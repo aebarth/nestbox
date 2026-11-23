@@ -17,6 +17,7 @@ import Organizations from './pages/Organizations.jsx'
 import OrgPicker from './pages/OrgPicker.jsx'
 import RecordLink from './pages/RecordLink.jsx'
 import Reports from './pages/Reports.jsx'
+import Storage from './pages/Storage.jsx'
 import Wizard from './pages/Wizard.jsx'
 import { api } from './services/api.js'
 
@@ -88,9 +89,9 @@ export default function App() {
     return <Spinner label="Starting Nestbox…" />
   }
 
-  // Org backups (#15 PR C): install admins manage any org; org owners/admins
-  // manage their own. Mirrors the /api/storage authz rule.
-  const canManageBackups = user.role === 'admin' || ['owner', 'admin'].includes(current?.role)
+  // Storage + org backups (#15): install admins manage any org; org
+  // owners/admins manage their own. Mirrors the /api/storage authz rule.
+  const canManageStorage = user.role === 'admin' || ['owner', 'admin'].includes(current?.role)
 
   return (
     <ToastProvider>
@@ -103,7 +104,8 @@ export default function App() {
           <Route path="/boxes" element={<Boxes />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/reports" element={<Reports />} />
-          <Route path="/backups" element={canManageBackups ? <OrgBackups user={user} /> : <Navigate to="/" />} />
+          <Route path="/storage" element={canManageStorage ? <Storage user={user} /> : <Navigate to="/" />} />
+          <Route path="/backups" element={canManageStorage ? <OrgBackups user={user} /> : <Navigate to="/" />} />
           <Route path="/onboarding" element={user.role === 'admin' ? <Onboarding /> : <Navigate to="/" />} />
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" />} />
           <Route path="/admin/orgs" element={user.role === 'admin' ? <Organizations /> : <Navigate to="/" />} />
