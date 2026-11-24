@@ -22,6 +22,7 @@ from routers import (
     scans,
     sources,
     storage,
+    updates,
     wizard,
 )
 
@@ -65,17 +66,30 @@ async def lifespan(app: FastAPI):
             time.sleep(sleep)
             delay = min(delay * 2, 10.0)
     logger.info("Database schema is up to date")
+
+    # Persist the installed version for Admin display (#6). Non-fatal: a
+    # transient DB hiccup here shouldn't kill the container — the next boot
+    # will retry.
+    try:
+        from database import SessionLocal
+        from services.updates import persist_installed_version
+
+        with SessionLocal() as s:
+            persist_installed_version(s)
+    except Exception:
+        logger.warning("Could not persist installed version (non-fatal)", exc_info=True)
+
     yield
 
 
 app = FastAPI(
     title="Nestbox",
     description="Scanned records management: track, categorize, monitor and box your documents.",
-    version="1.0.0",
+    version=os.environ.get("NESTBOX_VERSION", "1.0.0"),
     lifespan=lifespan,
 )
 
-for router in (auth, admin, sources, storage, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud, onboarding):
+for router in (auth, admin, sources, storage, scans, records, lookups, boxes, alerts, labels, reports, wizard, cloud, onboarding, updates):
     app.include_router(router.router)
 
 
