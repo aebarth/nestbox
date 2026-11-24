@@ -18,6 +18,7 @@ import OrgPicker from './pages/OrgPicker.jsx'
 import RecordLink from './pages/RecordLink.jsx'
 import Reports from './pages/Reports.jsx'
 import Storage from './pages/Storage.jsx'
+import Updates from './pages/Updates.jsx'
 import Wizard from './pages/Wizard.jsx'
 import { api } from './services/api.js'
 
@@ -110,6 +111,7 @@ export default function App() {
           <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate to="/" />} />
           <Route path="/admin/orgs" element={user.role === 'admin' ? <Organizations /> : <Navigate to="/" />} />
           <Route path="/admin/database" element={user.role === 'admin' ? <Database /> : <Navigate to="/" />} />
+          <Route path="/admin/updates" element={user.role === 'admin' ? <Updates /> : <Navigate to="/" />} />
           <Route path="/r/:uuid" element={<RecordLink />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
