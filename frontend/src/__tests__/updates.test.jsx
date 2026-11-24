@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -120,8 +120,12 @@ describe('Updates', () => {
     await user.click(prepareBtn)
 
     expect(await screen.findByText(/Update prepared/)).toBeInTheDocument()
-    expect(screen.getByText(PREPARE_RESULT.commands[0])).toBeInTheDocument()
-    expect(screen.getByText(PREPARE_RESULT.commands[1])).toBeInTheDocument()
+
+    // Scope to the commands container to avoid matching the rollback <ol> text
+    const commandsBox = screen.getByTestId('update-commands')
+    expect(within(commandsBox).getByText(PREPARE_RESULT.commands[0])).toBeInTheDocument()
+    expect(within(commandsBox).getByText(PREPARE_RESULT.commands[1])).toBeInTheDocument()
+
     expect(api.post).toHaveBeenCalledWith('/api/admin/updates/prepare')
   })
 
@@ -138,5 +142,53 @@ describe('Updates', () => {
 
     await user.click(await screen.findByRole('button', { name: /Prepare update/ }))
     expect(await screen.findByText(/If something goes wrong/)).toBeInTheDocument()
+  })
+
+  it('verify step confirms the new version after restart', async () => {
+    let callCount = 0
+    api.get.mockImplementation((path) => {
+      if (path.startsWith('/api/admin/version')) {
+        callCount++
+        // First call (initial page load) returns old version;
+        // second call (verify click) returns the new version.
+        return callCount <= 1
+          ? Promise.resolve(VERSION)
+          : Promise.resolve({ installed_version: 'v1.1.0', schema_version: 8 })
+      }
+      if (path.startsWith('/api/admin/updates/check')) return Promise.resolve(CHECK_UPDATE_AVAILABLE)
+      return Promise.resolve(null)
+    })
+    api.post.mockResolvedValue(PREPARE_RESULT)
+
+    const user = userEvent.setup()
+    renderPage()
+
+    // Trigger prepare first so the verify section appears
+    await user.click(await screen.findByRole('button', { name: /Prepare update/ }))
+    await screen.findByText(/Update prepared/)
+
+    // Click "Verify now"
+    await user.click(screen.getByRole('button', { name: /Verify now/ }))
+
+    expect(await screen.findByText(/Update verified — running v1\.1\.0/)).toBeInTheDocument()
+  })
+
+  it('verify step shows mismatch when version did not change', async () => {
+    api.get.mockImplementation((path) => {
+      if (path.startsWith('/api/admin/version')) return Promise.resolve(VERSION) // always old
+      if (path.startsWith('/api/admin/updates/check')) return Promise.resolve(CHECK_UPDATE_AVAILABLE)
+      return Promise.resolve(null)
+    })
+    api.post.mockResolvedValue(PREPARE_RESULT)
+
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /Prepare update/ }))
+    await screen.findByText(/Update prepared/)
+
+    await user.click(screen.getByRole('button', { name: /Verify now/ }))
+
+    expect(await screen.findByText(/Version mismatch/)).toBeInTheDocument()
   })
 })
