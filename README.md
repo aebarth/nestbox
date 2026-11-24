@@ -52,6 +52,11 @@ Then:
 | `NESTBOX_SOURCES_PATH` | A host folder containing the document folders you track. Mount network shares on the **host** first (macOS: Finder ⌘K, Windows: map a drive, Linux: cifs mount) and point this at them. Inside the app they appear under `/sources`. |
 | `NESTBOX_INBOX_PATH` | Where your scanner drops new PDFs. The Scan-to-Shelf wizard files them from here. |
 
+**Which folder should that be?** Local folder, NAS share, or a OneDrive / Dropbox / Google
+Drive sync folder — step-by-step setup for each (including the sync-client gotchas) is in
+[docs/storage-options.md](docs/storage-options.md). After first start you can view and change
+per-organization locations any time in **Admin → Storage**.
+
 ### Cloud repositories
 
 Each organization registers its **own** (free) API credentials — nothing is shared:
