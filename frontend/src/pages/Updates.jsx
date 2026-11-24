@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUpCircle, Check, Copy, Package, RefreshCw } from 'lucide-react'
+import { ArrowUpCircle, Check, Copy, Package, RefreshCw, ShieldCheck } from 'lucide-react'
 import { api, qs } from '../services/api.js'
 
 function fmtDate(iso) {
@@ -11,6 +11,8 @@ export default function Updates() {
   const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [verifying, setVerifying] = useState(false)
+  const [verifyResult, setVerifyResult] = useState(null) // 'success' | 'mismatch'
 
   // Current version (always loaded on page mount)
   const version = useQuery({
@@ -37,6 +39,25 @@ export default function Updates() {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
+  }
+
+  // Post-restart verify: re-fetch version and compare to the pinned target
+  const handleVerify = async () => {
+    setVerifying(true)
+    setVerifyResult(null)
+    try {
+      const fresh = await api.get('/api/admin/version')
+      const target = prepare.data?.pinned_version
+      if (target && fresh.installed_version === target) {
+        setVerifyResult('success')
+      } else {
+        setVerifyResult('mismatch')
+      }
+    } catch {
+      setVerifyResult('mismatch')
+    } finally {
+      setVerifying(false)
+    }
   }
 
   return (
@@ -152,7 +173,7 @@ export default function Updates() {
           </p>
 
           {/* Commands */}
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 space-y-2" data-testid="update-commands">
             {prepare.data.commands.map((cmd, i) => (
               <div key={i} className="group relative">
                 <pre className="overflow-x-auto rounded-lg bg-slate-900 px-4 py-3 pr-16 font-mono text-xs text-emerald-300">
@@ -177,14 +198,52 @@ export default function Updates() {
             </p>
           )}
 
+          {/* Post-restart verify step */}
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-slate-700">Verify update</p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  After running the commands above and the app restarts, confirm the new version is active.
+                </p>
+              </div>
+              <button
+                onClick={handleVerify}
+                disabled={verifying}
+                className="flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                <ShieldCheck size={14} className={verifying ? 'animate-pulse' : ''} />
+                {verifying ? 'Checking…' : 'Verify now'}
+              </button>
+            </div>
+
+            {verifyResult === 'success' && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2">
+                <Check size={14} className="text-emerald-600" />
+                <p className="text-xs font-medium text-emerald-800">
+                  Update verified — running {prepare.data.pinned_version}. Migrations applied successfully.
+                </p>
+              </div>
+            )}
+            {verifyResult === 'mismatch' && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2">
+                <RefreshCw size={14} className="text-amber-600" />
+                <p className="text-xs text-amber-800">
+                  Version mismatch — the app may still be restarting, or the update did not apply.
+                  Check the host logs and try again in a moment.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Rollback hint */}
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
             <p className="text-xs font-medium text-amber-800">If something goes wrong:</p>
-            <p className="mt-1 text-xs text-amber-700">
-              1. Pin the previous tag in <code className="font-mono">.env</code> (<code className="font-mono">NESTBOX_VERSION=&lt;old&gt;</code>)<br />
-              2. Run <code className="font-mono">docker compose up -d</code><br />
-              3. Restore the pre-update backup from Admin → Database
-            </p>
+            <ol className="mt-1 list-inside list-decimal text-xs text-amber-700">
+              <li>Pin the previous tag in <code className="font-mono">.env</code> (<code className="font-mono">NESTBOX_VERSION=&lt;old&gt;</code>)</li>
+              <li>Run <code className="font-mono">docker compose up -d</code></li>
+              <li>Restore the pre-update backup from Admin → Database</li>
+            </ol>
           </div>
         </section>
       )}
