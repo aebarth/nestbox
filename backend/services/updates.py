@@ -7,7 +7,6 @@ run automatically and the new version is visible in Admin.
 
 Tier 2 (opt-in one-click via Docker socket) is a follow-up.
 """
-import json
 import logging
 import os
 import time
@@ -114,25 +113,26 @@ def check_for_update(db: Session, force: bool = False) -> dict:
                 "Accept": "application/vnd.github+json",
                 "User-Agent": f"nestbox-{installed_version()}",
             })
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                # No releases yet — the repo exists but hasn't tagged one.
-                release = ReleaseInfo(
-                    tag_name="none", name="", body="",
-                    published_at="", html_url="",
-                )
-            else:
-                raise UpdateError(
-                    f"GitHub API returned {exc.response.status_code} while checking "
-                    f"for updates (repo: {GITHUB_REPO})"
-                ) from exc
         except httpx.RequestError as exc:
             raise UpdateError(
                 f"Could not reach the GitHub API to check for updates: {exc!r}"
             ) from exc
+
+        # Check status manually (not resp.raise_for_status()): mock responses
+        # in tests don't carry a _request attribute, which that method needs.
+        if resp.status_code == 404:
+            # No releases yet — the repo exists but hasn't tagged one.
+            release = ReleaseInfo(
+                tag_name="none", name="", body="",
+                published_at="", html_url="",
+            )
+        elif resp.status_code >= 400:
+            raise UpdateError(
+                f"GitHub API returned {resp.status_code} while checking "
+                f"for updates (repo: {GITHUB_REPO})"
+            )
         else:
+            data = resp.json()
             release = ReleaseInfo(
                 tag_name=data.get("tag_name", ""),
                 name=data.get("name", ""),
@@ -198,7 +198,7 @@ def prepare_update(db: Session, actor_username: str, actor_user_id: int | None =
 
     try:
         backup = lifecycle.create_backup(
-            db, kind="pre_update", actor_username=actor_username,
+            db, kind="manual", actor_username=actor_username,
             actor_user_id=actor_user_id, notes="Auto-backup before update",
         )
     except LifecycleError as exc:
