@@ -270,6 +270,16 @@ def restore_backup(db: Session, backup_id: int, actor_username: str = "system") 
     backup = get_backup(db, backup_id)
     if backup is None:
         raise LookupError(f"Backup {backup_id} not found")
+    if backup.org_id is not None:
+        # Org backups (kind='org') are zip files, not pg_dump archives. Without
+        # this guard the checksum passes, then the code below terminates
+        # sessions and COMMITS DROP SCHEMA public CASCADE before pg_restore
+        # chokes on the zip — destroying the live database over a user error.
+        raise LifecycleError(
+            f"Backup {backup_id} is an organization backup (org {backup.org_id}). Restore it via "
+            f"POST /api/storage/org/{backup.org_id}/backups/{backup_id}/restore — install-level "
+            "restore only accepts full-DB dumps."
+        )
 
     # Extract all data we need from the ORM object NOW. After db.rollback()
     # below, the instance's attributes are expired and the backups table will

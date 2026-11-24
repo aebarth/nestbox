@@ -15,12 +15,12 @@ Install-level full-DB backups (services/lifecycle.py, pg_dump -Fc under
 Restore re-inserts the exported rows into a target organization with fresh
 primary keys (sequences), remapped foreign keys, and fresh record UUIDs
 (records.uuid is UNIQUE install-wide, not per-org), so it works no matter
-what other data lives on the install. v1 constraint: the target org must hold
-no document data (records, boxes, duplicate groups, folder rules, scan runs,
-file events, alerts) — restore FILLS an empty org, it does not replace
-existing data (replace-restore needs a sanctioned delete path; follow-up).
-Reference data merges cleanly: record types dedupe by code, and the export's
-built-in inbox source maps onto the target's own.
+what other data lives on the install. By default the target org must hold no
+document data — restore FILLS an empty org. With replace=True the target's
+existing document data (records, boxes, duplicate groups, folder rules, scan
+runs, file events, alerts) and projects are wiped first via a sanctioned
+owner-only trigger bypass; reference data (sources, record types) always
+merges onto the target's own.
 
 NOT exported: org_settings (the target keeps its own storage config), users
 and audit_log (install-level). Cloud-source credentials ARE exported
@@ -58,6 +58,12 @@ EMPTY_CHECK_TABLES = [
     "records", "boxes", "duplicate_groups", "folder_rules",
     "scan_runs", "file_events", "alerts",
 ]
+
+# Tables wiped by replace-restore: all document data plus projects (the
+# target's own filing structure is replaced by the backup's; without this,
+# the backup's projects would collide with UNIQUE (org_id, code)). Reference
+# data (sources, record_types) is merged, never wiped.
+REPLACE_WIPE_TABLES = EMPTY_CHECK_TABLES + ["projects"]
 
 # FK columns remapped on restore: table -> {column: parent_table}
 FK_REMAP = {
@@ -305,13 +311,51 @@ def _table_columns(cur, table: str) -> list[tuple[str, int]]:
     return cols
 
 
+def _wipe_org_document_data(cur, org_id: int, counts: dict[str, int]) -> None:
+    """Sanctioned per-org delete for replace-restore.
+
+    db-init/03-audit.sql rejects DELETEs on audited tables via a BEFORE
+    DELETE trigger that raises — for every role, including the table owner.
+    Only the owner may disable a trigger, so this is the sanctioned escape
+    hatch: within the caller's single transaction, disable each existing
+    <table>_no_delete trigger (looked up in pg_trigger — scan_runs and
+    file_events have none), delete the org's rows, and re-enable before
+    commit. A rollback restores both the rows and the trigger state, and no
+    other session ever observes the disabled window (it closes before
+    commit). Trigger-based audit is off for these deletes by design; the
+    caller records them in the explicit org_restore audit row — the same
+    pattern lifecycle uses for schema-level operations.
+    """
+    cur.execute(
+        "SELECT c.relname, t.tgname FROM pg_catalog.pg_trigger t "
+        "JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relname = ANY(%s) "
+        "AND t.tgname = c.relname || '_no_delete'",
+        (list(counts),),
+    )
+    triggers = cur.fetchall()  # (relname, tgname)
+    for rel, tg in triggers:
+        cur.execute(f"ALTER TABLE {rel} DISABLE TRIGGER {tg}")
+    try:
+        for t in counts:  # table names come from REPLACE_WIPE_TABLES constants
+            cur.execute(f"DELETE FROM {t} WHERE org_id = %s", (org_id,))
+    finally:
+        for rel, tg in triggers:
+            cur.execute(f"ALTER TABLE {rel} ENABLE TRIGGER {tg}")
+
+
 def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
-                       actor_username: str = "system") -> dict:
+                       actor_username: str = "system", replace: bool = False) -> dict:
     """Restore a verified org backup into a target org (fresh ids, remapped FKs).
+
+    With replace=True the target's existing document data + projects are
+    wiped first — in the same transaction as the fill, so the replace is
+    atomic either way.
 
     Single transaction on the owner-role engine; rolls back on any error.
     Raises LookupError (unknown backup), OrgBackupError (user-facing problem:
-    not an org backup, missing/corrupt file, non-empty target).
+    not an org backup, missing/corrupt file, non-empty target without replace).
     """
     from models import Backup
 
@@ -340,17 +384,25 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
 
     raw = schema_engine.raw_connection()
     maps: dict[str, dict[int, int]] = {}
+    wiped: dict[str, int] = {}
     try:
         cur = raw.cursor()
-        # 1) v1 constraint: the target org holds no document data.
-        for t in EMPTY_CHECK_TABLES:
+        # 1) The target org holds no document data — or we wipe it first
+        #    (replace=True). projects is included because the backup's own
+        #    projects would otherwise collide with UNIQUE (org_id, code).
+        for t in REPLACE_WIPE_TABLES:
             cur.execute(f"SELECT count(*) FROM {t} WHERE org_id = %s", (target_org_id,))
             n = cur.fetchone()[0]
             if n:
-                raise OrgBackupError(
-                    f"Target organization is not empty ({n} rows in {t}). v1 restore fills an "
-                    "empty org only — create a fresh organization (or reset the install) first."
-                )
+                wiped[t] = n
+                if not replace:
+                    raise OrgBackupError(
+                        f"Target organization is not empty ({n} rows in {t}). Restore fills an "
+                        "empty org only — create a fresh organization (or reset the install) "
+                        "first, or pass replace=true to wipe its existing document data."
+                    )
+        if wiped:
+            _wipe_org_document_data(cur, target_org_id, wiped)
         # 2) Insert in dependency order, remapping FKs at insert time.
         for t in tables:
             col_info = _table_columns(cur, t)
@@ -461,6 +513,7 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
     _audit_org(actor_username, target_org_id, {
         "op": "org_restore", "backup": backup.filename, "sha256": backup.sha256,
         "source_org_id": backup.org_id, "files_restored": files_restored,
+        "replaced": bool(wiped), "deleted_counts": wiped,
     })
     log.warning("Org %s restored from %s into org %s by %s",
                 manifest.get("slug"), backup.filename, target_org_id, actor_username)
@@ -469,4 +522,6 @@ def restore_org_backup(db: Session, backup_id: int, target_org_id: int,
         "backup": backup.filename,
         "counts": manifest.get("counts", {}),
         "files_restored": files_restored,
+        "replaced": bool(wiped),
+        "deleted_counts": wiped,
     }
