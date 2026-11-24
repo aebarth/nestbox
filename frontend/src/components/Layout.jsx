@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
+  ArrowUpCircle,
   Bell,
   Building2,
   Database as DatabaseIcon,
@@ -193,6 +194,19 @@ export default function Layout({ user, children }) {
             >
               <DatabaseIcon size={17} />
               Database
+            </NavLink>
+          )}
+          {user.role === 'admin' && (
+            <NavLink
+              to="/admin/updates"
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <ArrowUpCircle size={17} />
+              Updates
             </NavLink>
           )}
         </nav>
